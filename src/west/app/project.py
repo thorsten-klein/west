@@ -6,6 +6,7 @@
 '''West project commands'''
 
 import argparse
+import hashlib
 import logging
 import os
 import shlex
@@ -15,7 +16,7 @@ import sys
 import textwrap
 import time
 from functools import partial
-from os.path import abspath, relpath
+from os.path import abspath, dirname, relpath
 from pathlib import Path, PurePath
 from time import perf_counter
 from urllib.parse import urlparse
@@ -1069,6 +1070,9 @@ class Update(_ProjectCommand):
         group.add_argument('--path-cache',
                            help='''cached repositories are in the same relative
                            paths as the workspace being updated''')
+        group.add_argument('--auto-cache',
+                           help='''automatically setup local cache repositories
+                           (clone on first run and sync on subsequent runs)''')
 
         group = parser.add_argument_group(
             title='fetching behavior',
@@ -1151,6 +1155,7 @@ class Update(_ProjectCommand):
         self.narrow = args.narrow or config.getboolean('update.narrow')
         self.path_cache = args.path_cache or config.get('update.path-cache')
         self.name_cache = args.name_cache or config.get('update.name-cache')
+        self.auto_cache = args.auto_cache or config.get('update.auto-cache')
         self.sync_submodules = config.getboolean('update.sync-submodules',
                                                  default=True)
 
@@ -1501,11 +1506,39 @@ class Update(_ProjectCommand):
             if take_stats:
                 stats['init'] = perf_counter() - start
 
+    def handle_auto_cache(self, project):
+        # update() helper. Initialize the specified cache directory if it has
+        # not been cloned yet. If the cache directory is already existing, it
+        # will be synced with remote.
+
+        cache_dir = self.project_cache(project)
+        auto_cache_dir = self.get_auto_cache(project)
+
+        if not auto_cache_dir or (cache_dir != auto_cache_dir):
+            # nothing to do: auto-cache directory was either not specified
+            # or another cache was specified with higher priority.
+            return
+
+        if not Path(cache_dir).exists():
+            # The cache has not been created yet at the expected location.
+            # Ensure that its parent directory exist before cloning anything.
+            # Then bare-clone the repository into the local cache.
+            cache_dir_parent = dirname(cache_dir)
+            os.makedirs(cache_dir_parent, exist_ok=True)
+            project.git(['clone', '--bare', project.url, os.fspath(cache_dir)],
+                        cwd=cache_dir_parent)
+        else:
+            # The local cache is already existing. Sync it with remote.
+            project.git(['--bare', 'fetch'], cwd=cache_dir)
+
     def init_project(self, project):
         # update() helper. Initialize an uncloned project repository.
         # If there's a local clone available, it uses that. Otherwise,
         # it just creates the local repository and sets up the
         # convenience remote without fetching anything from the network.
+
+        if self.auto_cache:
+            self.handle_auto_cache(project)
 
         cache_dir = self.project_cache(project)
 
@@ -1556,6 +1589,12 @@ class Update(_ProjectCommand):
                 # f'refs/remotes/{project.remote_name}/{branch}'.
                 project.git(['update-ref', '-d', branch])
 
+    def get_auto_cache(self, project):
+        if self.auto_cache:
+            url_hash = hashlib.sha1(project.url.encode('utf-8')).hexdigest()
+            return os.fspath(Path(self.auto_cache) / project.path / url_hash)
+        return None
+
     def project_cache(self, project):
         # Find the absolute path to a pre-existing local clone of a project
         # and return it. If the search fails, return None.
@@ -1582,6 +1621,12 @@ class Update(_ProjectCommand):
                 self.dbg(
                     f'{project.path} not in --path-cache {self.path_cache}',
                     level=Verbosity.DBG_MORE)
+        elif self.auto_cache is not None:
+            auto_cache = self.get_auto_cache(project)
+            self.dbg(
+                f'auto-caching {project.path} in {auto_cache}',
+                level=Verbosity.DBG_MORE)
+            return os.fspath(auto_cache)
 
         return None
 
