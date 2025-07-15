@@ -1580,6 +1580,57 @@ def setup_cache_workspace(workspace, remote, foo_head, bar_head):
         ''')
 
 
+def test_update_name_cache_auto(tmpdir):
+    # Test that 'west update --name-cache' works and doesn't hit the
+    # network if it doesn't have to.
+
+    remote = tmpdir / 'remotes' / 'remote'
+
+    create_repo(remote)
+    create_repo(tmpdir / 'remotes' / 'foo')
+    create_repo(tmpdir / 'remotes' / 'bar')
+
+    foo_head = rev_parse(tmpdir / 'remotes' / 'foo', 'HEAD')
+    bar_head = rev_parse(tmpdir / 'remotes' / 'bar', 'HEAD')
+
+    name_cache_dir = tmpdir / 'name_cache'
+
+    workspace = tmpdir / 'workspace'
+    setup_cache_workspace(workspace, remote, foo_head, bar_head)
+    workspace.chdir()
+    foo = workspace / 'subdir' / 'foo'
+    bar = workspace / 'bar'
+
+    # Test the command line option.
+    cmd(['update', '--name-cache', name_cache_dir, '--auto-cache'])
+    assert foo.check(dir=1)
+    assert bar.check(dir=1)
+    assert (name_cache_dir / "foo").check(dir=1)
+    assert (name_cache_dir / "bar").check(dir=1)
+    assert rev_parse(foo, 'HEAD') == foo_head
+    assert rev_parse(bar, 'HEAD') == bar_head
+
+    # Move the repositories out of the way and test the configuration option.
+    # (We can't use shutil.rmtree here because Windows.)
+    shutil.move(os.fspath(foo), os.fspath(foo) + ".moved")
+    shutil.move(os.fspath(bar), os.fspath(bar) + ".moved")
+    shutil.move(os.fspath(name_cache_dir / "foo"),
+                os.fspath(name_cache_dir / "foo") + ".moved")
+    shutil.move(os.fspath(name_cache_dir / "bar"),
+                os.fspath(name_cache_dir / "bar") + ".moved")
+    cmd(['config', 'update.name-cache', name_cache_dir])
+    cmd(['config', 'update.auto-cache', 'true'])
+    cmd('update')
+    assert foo.check(dir=1)
+    assert bar.check(dir=1)
+    assert (name_cache_dir / "foo").check(dir=1)
+    assert (name_cache_dir / "bar").check(dir=1)
+    assert rev_parse(foo, 'HEAD') == foo_head
+    assert rev_parse(bar, 'HEAD') == bar_head
+
+    # Run update again
+    cmd('update')
+
 def test_update_name_cache(tmpdir):
     # Test that 'west update --name-cache' works and doesn't hit the
     # network if it doesn't have to.
@@ -1616,6 +1667,55 @@ def test_update_name_cache(tmpdir):
     assert rev_parse(foo, 'HEAD') == foo_head
     assert rev_parse(bar, 'HEAD') == bar_head
 
+
+def test_update_path_cache_auto(tmpdir):
+    # Test that 'west update --path-cache' works and doesn't hit the
+    # network if it doesn't have to.
+
+    remote = tmpdir / 'remotes' / 'remote'
+    create_repo(remote)
+    create_repo(tmpdir / 'remotes' / 'foo')
+    create_repo(tmpdir / 'remotes' / 'bar')
+    foo_head = rev_parse(tmpdir / 'remotes' / 'foo', 'HEAD')
+    bar_head = rev_parse(tmpdir / 'remotes' / 'bar', 'HEAD')
+
+    path_cache_dir = tmpdir / 'path_cache_dir'
+
+    workspace = tmpdir / 'workspace'
+    setup_cache_workspace(workspace, remote, foo_head, bar_head)
+    workspace.chdir()
+    foo = workspace / 'subdir' / 'foo'
+    bar = workspace / 'bar'
+
+    # Test the command line option.
+    cmd(['update', '--path-cache', path_cache_dir, '--auto-cache'])
+    assert foo.check(dir=1)
+    assert bar.check(dir=1)
+    assert (path_cache_dir / "subdir" / "foo").check(dir=1)
+    assert (path_cache_dir / "bar").check(dir=1)
+    assert rev_parse(foo, 'HEAD') == foo_head
+    assert rev_parse(bar, 'HEAD') == bar_head
+
+    # Move the repositories out of the way and test the configuration option.
+    # (We can't use shutil.rmtree here because Windows.)
+    shutil.move(os.fspath(foo), os.fspath(foo) + ".moved")
+    shutil.move(os.fspath(bar), os.fspath(bar) + ".moved")
+    shutil.move(os.fspath(path_cache_dir / "subdir" / "foo"),
+                os.fspath(path_cache_dir / "subdir" / "foo") + ".moved")
+    shutil.move(os.fspath(path_cache_dir / "bar"),
+                os.fspath(path_cache_dir / "bar") + ".moved")
+    cmd(['config', 'update.path-cache', path_cache_dir])
+    cmd(['config', 'update.auto-cache', 'true'])
+    cmd('update')
+    assert foo.check(dir=1)
+    assert bar.check(dir=1)
+    assert (path_cache_dir / "subdir" / "foo").check(dir=1)
+    assert (path_cache_dir / "bar").check(dir=1)
+    assert rev_parse(foo, 'HEAD') == foo_head
+    assert rev_parse(bar, 'HEAD') == bar_head
+
+    # Run update again
+    cmd('update')
 
 def test_update_path_cache(tmpdir):
     # Test that 'west update --path-cache' works and doesn't hit the

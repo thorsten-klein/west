@@ -15,7 +15,7 @@ import sys
 import textwrap
 import time
 from functools import partial
-from os.path import abspath, relpath
+from os.path import abspath, dirname, relpath
 from pathlib import Path, PurePath
 from time import perf_counter
 from urllib.parse import urlparse
@@ -1069,6 +1069,9 @@ class Update(_ProjectCommand):
         group.add_argument('--path-cache',
                            help='''cached repositories are in the same relative
                            paths as the workspace being updated''')
+        group.add_argument('--auto-cache', action='store_true',
+                           help='''automatically setup local cache repositories
+                           (clone on first run and sync on subsequent runs)''')
 
         group = parser.add_argument_group(
             title='fetching behavior',
@@ -1151,6 +1154,7 @@ class Update(_ProjectCommand):
         self.narrow = args.narrow or config.getboolean('update.narrow')
         self.path_cache = args.path_cache or config.get('update.path-cache')
         self.name_cache = args.name_cache or config.get('update.name-cache')
+        self.auto_cache = args.auto_cache or config.get('update.auto-cache')
         self.sync_submodules = config.getboolean('update.sync-submodules',
                                                  default=True)
 
@@ -1501,11 +1505,38 @@ class Update(_ProjectCommand):
             if take_stats:
                 stats['init'] = perf_counter() - start
 
+    def handle_auto_cache(self, project):
+        # update() helper. Initialize the specified cache directory if it has
+        # not been cloned yet. If the cache directory is already existing, it
+        # will be synced with remote.
+        if self.name_cache is not None:
+            cache_dir_expected = Path(self.name_cache) / project.name
+        elif self.path_cache is not None:
+            cache_dir_expected = Path(self.path_cache) / project.path
+        else:
+            # no cache dir could be determined
+            return
+
+        cache_dir = self.project_cache(project)
+        if cache_dir is None:
+            cache_dir_parent = dirname(cache_dir_expected)
+            # cache has not been created yet at the expected location.
+            # Clone it as bare repository now.
+            os.makedirs(cache_dir_parent, exist_ok=True)
+            project.git(['clone', '--bare', project.url, os.fspath(cache_dir_expected)],
+                        cwd=cache_dir_parent)
+        else:
+            # cache is already existing. Sync it with remote now.
+            project.git(['--bare', 'fetch'], cwd=cache_dir)
+
     def init_project(self, project):
         # update() helper. Initialize an uncloned project repository.
         # If there's a local clone available, it uses that. Otherwise,
         # it just creates the local repository and sets up the
         # convenience remote without fetching anything from the network.
+
+        if self.auto_cache:
+            self.handle_auto_cache(project)
 
         cache_dir = self.project_cache(project)
 
