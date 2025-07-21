@@ -1077,7 +1077,7 @@ class Update(_ProjectCommand):
                            (analog to --name-cache, but with an additional
                            subfolder for different remote urls). Each local
                            cache repository is automatically cloned on first
-                           usage and automatically synced on subsequent runs.
+                           usage and automatically synced on subsequent clones.
                            This cache has lowest priority (Prio 2).''')
 
         group = parser.add_argument_group(
@@ -1527,7 +1527,6 @@ class Update(_ProjectCommand):
         # update() helper. Initialize the specified cache directory if it has
         # not been cloned yet. If the cache directory is already existing, it
         # will be synced with remote.
-
         auto_cache_dir = self.project_auto_cache(project)
 
         if not auto_cache_dir:
@@ -1614,8 +1613,7 @@ class Update(_ProjectCommand):
             return None
         # get the location of the project within the auto-cache.
         # Note: The url is hashed and used as a subfolder to accomodate
-        # changes in the manifest. To avoid long paths, only the first 8
-        # characters of the hash are used.
+        # changes in the manifest.
         subdir_hash = hashlib.md5(project.url.encode('utf-8')).hexdigest()
         return os.fspath(Path(self.auto_cache) / basename(project.url) / subdir_hash)
 
@@ -1714,8 +1712,6 @@ class Update(_ProjectCommand):
         tags = (['--tags'] if not self.narrow else [])
         clone_depth = (['--depth', str(project.clone_depth)] if
                        project.clone_depth else [])
-        # sync the auto_cache before fetching the project
-        self.handle_auto_cache(project)
 
         # -f is needed to avoid errors in case multiple remotes are
         # present, at least one of which contains refs that can't be

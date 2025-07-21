@@ -1762,7 +1762,7 @@ def test_update_auto_cache(tmpdir):
     shutil.move(os.fspath(auto_cache_dir / "bar"),
                 os.fspath(auto_cache_dir / "bar") + ".moved")
     cmd(['config', 'update.auto-cache', os.fspath(auto_cache_dir)])
-    cmd(['update', '-f', 'always'])
+    cmd(['update'])
     assert foo.check(dir=1)
     assert bar.check(dir=1)
     assert (auto_cache_dir / "foo").check(dir=1)
@@ -1770,8 +1770,27 @@ def test_update_auto_cache(tmpdir):
     assert rev_parse(foo, 'HEAD') == foo_head
     assert rev_parse(bar, 'HEAD') == bar_head
 
-    # Run update again
-    cmd('update')
+    # Run update again and check that auto-sync before initial clone works
+    add_commit(tmpdir / 'remotes' / 'foo', 'new commit')
+    add_commit(tmpdir / 'remotes' / 'bar', 'new commit')
+    foo_head_new = rev_parse(tmpdir / 'remotes' / 'foo', 'HEAD')
+    bar_head_new = rev_parse(tmpdir / 'remotes' / 'foo', 'HEAD')
+    other_workspace = tmpdir / 'other_workspace'
+    setup_cache_workspace(other_workspace,
+                          foo_remote=(tmpdir / 'remotes' / 'foo'),
+                          foo_head=foo_head_new,
+                          bar_remote=(tmpdir / 'remotes' / 'bar'),
+                          bar_head=bar_head_new)
+    other_workspace.chdir()
+    other_workspace_foo = other_workspace / 'subdir' / 'foo'
+    other_workspace_bar = other_workspace / 'bar'
+
+    # auto-cache config is still active
+    cmd(['update', '--auto-cache', os.fspath(auto_cache_dir)])
+    assert other_workspace_foo.check(dir=1)
+    assert other_workspace_bar.check(dir=1)
+    assert rev_parse(other_workspace_foo, 'HEAD') == foo_head_new
+    assert rev_parse(other_workspace_bar, 'HEAD') == bar_head_new
 
 def test_update_path_cache(tmpdir):
     # Test that 'west update --path-cache' works and doesn't hit the
