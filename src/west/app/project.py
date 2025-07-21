@@ -32,6 +32,7 @@ from west.manifest import (
     Manifest,
     ManifestImportFailed,
     ManifestProject,
+    Project,
     Submodule,
     _manifest_content_at,
 )
@@ -1373,12 +1374,40 @@ class Update(_ProjectCommand):
             ref = []
             if (cache_dir):
                 submodule_ref = Path(cache_dir, submodule.path)
-                if any(os.scandir(submodule_ref)):
+                # do not break existing behavior: search for the submodule
+                # cache if it is a subfolder of the current project cache
+                if submodule_ref.is_dir() and any(os.scandir(submodule_ref)):
                     ref = ['--reference', os.fspath(submodule_ref)]
                     self.small_banner(f'using reference from: {submodule_ref}')
                     self.dbg(
                         f'found {submodule.path} in --path-cache {submodule_ref}',
                         level=Verbosity.DBG_MORE)
+                else:
+                    # determine the url from the submodule and handle it like
+                    # any other project cache
+                    res = project.git(['config', '--file', '.gitmodules',
+                                       f'submodule.{submodule.path}.url'],
+                                      capture_stdout=True)
+                    if not res.stdout or res.returncode:
+                        self.die("Submodule url cannot be determined for project:"
+                                 f"{project.name} ({project.path}).")
+                    submodule_url = res.stdout.decode('utf-8').strip()
+
+                    submodule_project = Project(name=submodule.name,
+                                                path=submodule.path,
+                                                url=submodule_url)
+
+                    submodule_cache = Path(self.project_cache(submodule_project))
+
+                    self.handle_auto_cache(submodule_project)
+
+                    if submodule_cache.is_dir() and any(submodule_cache.iterdir()):
+                        ref = ['--reference', os.fspath(submodule_cache)]
+                        self.small_banner(f'using reference from: {submodule_cache}')
+                        self.dbg(
+                            f'found {submodule.path} in cache folder {submodule_cache}',
+                            level=Verbosity.DBG_MORE)
+
             project.git(config_opts +
                         ['submodule', 'update',
                             '--init', submodules_update_strategy,

@@ -71,7 +71,7 @@ SUBMODULE_ADD = [GIT,
                  'add']
 
 # Helper string for the same purpose when running west update.
-PROTOCOL_FILE_ALLOW = '--submodule-init-config protocol.file.allow=always'
+PROTOCOL_FILE_ALLOW = '--submodule-init-config=protocol.file.allow=always'
 
 #
 # Test fixtures
@@ -1770,7 +1770,7 @@ def test_update_auto_cache(tmpdir):
     assert rev_parse(foo, 'HEAD') == foo_head
     assert rev_parse(bar, 'HEAD') == bar_head
 
-    # Run update again and check that auto-sync before initial clone works
+    # Run update again and check that auto-sync happens before initial
     add_commit(tmpdir / 'remotes' / 'foo', 'new commit')
     add_commit(tmpdir / 'remotes' / 'bar', 'new commit')
     foo_head_new = rev_parse(tmpdir / 'remotes' / 'foo', 'HEAD')
@@ -1784,13 +1784,73 @@ def test_update_auto_cache(tmpdir):
     other_workspace.chdir()
     other_workspace_foo = other_workspace / 'subdir' / 'foo'
     other_workspace_bar = other_workspace / 'bar'
-
-    # auto-cache config is still active
     cmd(['update', '--auto-cache', os.fspath(auto_cache_dir)])
     assert other_workspace_foo.check(dir=1)
     assert other_workspace_bar.check(dir=1)
     assert rev_parse(other_workspace_foo, 'HEAD') == foo_head_new
     assert rev_parse(other_workspace_bar, 'HEAD') == bar_head_new
+
+def test_update_auto_cache_submodules(tmpdir):
+    # Test that 'west update --auto-cache' works with submodules and does set
+    # up the local cache correctly.
+
+    create_repo(tmpdir / 'remotes' / 'foo')
+    foo_remote = tmpdir / 'remotes' / 'foo'
+    create_repo(tmpdir / 'remotes' / 'bar')
+    bar_remote = tmpdir / 'remotes' / 'bar'
+
+    # make bar a submodule of foo
+    subprocess.check_call(SUBMODULE_ADD + [bar_remote, 'bar'], cwd=foo_remote)
+    add_commit(foo_remote, 'added submodule')
+
+    foo_head = rev_parse(tmpdir / 'remotes' / 'foo', 'HEAD')
+    bar_head = rev_parse(tmpdir / 'remotes' / 'bar', 'HEAD')
+
+    auto_cache_dir = tmpdir / 'auto_cache_dir'
+
+    workspace = tmpdir / 'workspace'
+    create_workspace(workspace)
+    manifest_project = workspace / 'mp'
+    with open(manifest_project / 'west.yml', 'w') as f:
+        f.write(f'''
+        manifest:
+          projects:
+          - name: foo
+            submodules: true
+            path: subdir/foo
+            url: file://{foo_remote}
+            revision: {foo_head}
+        ''')
+
+    workspace.chdir()
+    foo = workspace / 'subdir' / 'foo'
+    bar = workspace / 'subdir' / 'foo' / 'bar'
+
+    # Test the command line option.
+    cmd(['update', f'{PROTOCOL_FILE_ALLOW}', '--auto-cache', os.fspath(auto_cache_dir)])
+    assert foo.check(dir=1)
+    assert bar.check(dir=1)
+    assert (auto_cache_dir / "foo").check(dir=1)
+    assert (auto_cache_dir / "bar").check(dir=1)
+    assert rev_parse(foo, 'HEAD') == foo_head
+    assert rev_parse(bar, 'HEAD') == bar_head
+
+    # check that the remote urls are correct
+    manifest = Manifest.from_topdir(topdir=workspace,
+                                    import_flags=MIF.IGNORE_PROJECTS)
+    projects = manifest.get_projects(['foo'])
+    foo_project = projects[0]
+
+    # remote url of foo project same as in manifest (with file://)
+    res = foo_project.git('remote get-url origin',
+                          capture_stdout=True, cwd=foo)
+    assert res.stdout.decode('utf-8').strip() == f'file://{foo_remote}'
+
+    # remote url of bar submodule
+    res = foo_project.git('remote get-url origin',
+                          capture_stdout=True, cwd=bar)
+    assert res.stdout.decode('utf-8').strip() == bar_remote
+
 
 def test_update_path_cache(tmpdir):
     # Test that 'west update --path-cache' works and doesn't hit the
