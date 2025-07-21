@@ -1577,8 +1577,8 @@ class Update(_ProjectCommand):
                         cwd=cache_dir_parent)
             self.create_auto_cache_info(project, cache_dir)
         else:
-            # The local cache is already existing. Sync it with remote.
-            project.git(['--bare', 'fetch'], cwd=cache_dir)
+            # The local cache already exists. Sync it with remote.
+            project.git(['fetch'], cwd=cache_dir)
 
     def init_project(self, project):
         # update() helper. Initialize an uncloned project repository.

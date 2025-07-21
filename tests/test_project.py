@@ -1774,7 +1774,7 @@ def test_update_auto_cache(tmpdir):
     add_commit(tmpdir / 'remotes' / 'foo', 'new commit')
     add_commit(tmpdir / 'remotes' / 'bar', 'new commit')
     foo_head_new = rev_parse(tmpdir / 'remotes' / 'foo', 'HEAD')
-    bar_head_new = rev_parse(tmpdir / 'remotes' / 'foo', 'HEAD')
+    bar_head_new = rev_parse(tmpdir / 'remotes' / 'bar', 'HEAD')
     other_workspace = tmpdir / 'other_workspace'
     setup_cache_workspace(other_workspace,
                           foo_remote=(tmpdir / 'remotes' / 'foo'),
