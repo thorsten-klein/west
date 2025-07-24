@@ -486,6 +486,11 @@ def rev_list(repo):
     out = subprocess.check_output([GIT, 'rev-list', '--all'], cwd=repo)
     return out.decode(sys.getdefaultencoding()).strip()
 
+def git_cmd(repo, cmd):
+    repo = os.fspath(repo)
+    out = subprocess.check_output([GIT] + cmd, cwd=repo)
+    return out.decode(sys.getdefaultencoding()).strip()
+
 def check_proj_consistency(actual, expected):
     # Check equality of all project fields (projects themselves are
     # not comparable), with extra semantic consistency checking

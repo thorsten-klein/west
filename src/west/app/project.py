@@ -32,7 +32,6 @@ from west.manifest import (
     Manifest,
     ManifestImportFailed,
     ManifestProject,
-    Project,
     Submodule,
     _manifest_content_at,
 )
@@ -1368,7 +1367,7 @@ class Update(_ProjectCommand):
 
         # For the list type, update given list of submodules.
         for submodule in submodules:
-            if self.sync_submodules:
+            if self.sync_submodules or self.auto_cache:
                 project.git(['submodule', 'sync', '--recursive',
                              '--', submodule.path])
             ref = []
@@ -1379,33 +1378,12 @@ class Update(_ProjectCommand):
                     ref = ['--reference', os.fspath(submodule_ref)]
                     self.small_banner(f'using reference from: {submodule_ref}')
                     self.dbg(
-                        f'found {submodule.path} in --path-cache {submodule_ref}',
+                        f'found {submodule.path} under project\'s cache {submodule_ref}',
                         level=Verbosity.DBG_MORE)
                 else:
-                    # determine the url from the submodule and handle it like
-                    # any other project cache
-                    res = project.git(['config', '--file', '.gitmodules',
-                                       f'submodule.{submodule.path}.url'],
-                                      capture_stdout=True)
-                    if not res.stdout or res.returncode:
-                        self.die("Submodule url cannot be determined for project:"
-                                 f"{project.name} ({project.path}).")
-                    submodule_url = res.stdout.decode('utf-8').strip()
-
-                    submodule_project = Project(name=submodule.name,
-                                                path=submodule.path,
-                                                url=submodule_url)
-
-                    submodule_cache = Path(self.project_cache(submodule_project))
-
-                    self.handle_auto_cache(submodule_project)
-
-                    if submodule_cache.is_dir() and any(submodule_cache.iterdir()):
-                        ref = ['--reference', os.fspath(submodule_cache)]
-                        self.small_banner(f'using reference from: {submodule_cache}')
-                        self.dbg(
-                            f'found {submodule.path} in cache folder {submodule_cache}',
-                            level=Verbosity.DBG_MORE)
+                    if self.auto_cache:
+                        self.die("Submodule cache expected, but could not be found "
+                                 f"at the following location: {submodule_ref}")
 
             project.git(config_opts +
                         ['submodule', 'update',
@@ -1567,14 +1545,21 @@ class Update(_ProjectCommand):
             return
 
         if not Path(cache_dir).exists():
+            config_opts = []
+            for config_opt in self.args.submodule_init_config:
+                config_opts.extend(['-c', config_opt])
             # The cache has not been created yet at the expected location.
             # Ensure that its parent directory exist before cloning anything.
             # Then clone the repository into the local cache.
             cache_dir_parent = Path(cache_dir).parent
             cache_dir_parent.mkdir(parents=True, exist_ok=True)
-            project.git(['clone', '--', project.url, os.fspath(cache_dir)],
+            project.git(config_opts + ['clone', '--', project.url, os.fspath(cache_dir)],
                         cwd=cache_dir_parent)
             self.create_auto_cache_info(project, cache_dir)
+            project.git(config_opts + ['submodule', 'init'],
+                        cwd=cache_dir)
+            project.git(config_opts + ['submodule', 'update', '--recursive'],
+                        cwd=cache_dir)
         else:
             # The local cache already exists. Sync it with remote.In order to
             # fetch refs/heads/* current HEAD must be detached.
