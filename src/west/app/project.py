@@ -1558,13 +1558,15 @@ class Update(_ProjectCommand):
             self.create_auto_cache_info(project, cache_dir)
             project.git(config_opts + ['submodule', 'init'],
                         cwd=cache_dir)
-            project.git(config_opts + ['submodule', 'update', '--recursive'],
+            project.git(config_opts + ['submodule', 'update', '--init', '--checkout', '--recursive'],
                         cwd=cache_dir)
         else:
             # The local cache already exists. Sync it with remote.In order to
             # fetch refs/heads/* current HEAD must be detached.
             project.git(['checkout', '--detach', 'HEAD'], cwd=cache_dir)
             project.git(['fetch', '--', project.url, 'refs/heads/*:refs/heads/*'], cwd=cache_dir)
+            project.git(['submodule', 'update', '--init', '--checkout', '--recursive'],
+                        cwd=cache_dir)
 
     def init_project(self, project):
         # update() helper. Initialize an uncloned project repository.

@@ -318,20 +318,27 @@ def test_update_auto_cache_submodules(tmpdir):
     # └── foo
     #     └── <hash>
 
-    create_repo(tmpdir / 'remotes' / 'foo')
     foo_remote = tmpdir / 'remotes' / 'foo'
-    create_repo(tmpdir / 'remotes' / 'bar')
     bar_remote = tmpdir / 'remotes' / 'bar'
+    baz_remote = tmpdir / 'remotes' / 'baz'
+    create_repo(foo_remote)
+    create_repo(bar_remote)
+    create_repo(baz_remote)
 
-    # make bar a submodule of foo
+    # make baz a submodule of bar, and bar a submodule of foo
+    subprocess.check_call(SUBMODULE_ADD + [baz_remote, 'baz'], cwd=bar_remote)
+    add_commit(bar_remote, 'added baz submodule')
     subprocess.check_call(SUBMODULE_ADD + [bar_remote, 'bar'], cwd=foo_remote)
-    add_commit(foo_remote, 'added submodule')
+    add_commit(foo_remote, 'added bar submodule')
 
+    # store the head commits
     foo_head = rev_parse(foo_remote, 'HEAD')
     bar_head = rev_parse(bar_remote, 'HEAD')
+    baz_head = rev_parse(baz_remote, 'HEAD')
 
     auto_cache_dir = tmpdir / 'auto_cache_dir'
 
+    # setup workspace with submodules: true
     workspace = tmpdir / 'workspace'
     create_workspace(workspace)
     manifest_project = workspace / 'mp'
@@ -345,49 +352,69 @@ def test_update_auto_cache_submodules(tmpdir):
             url: file://{foo_remote}
             revision: {foo_head}
         ''')
-
     workspace.chdir()
     foo = workspace / 'subdir' / 'foo'
     bar = workspace / 'subdir' / 'foo' / 'bar'
+    baz = workspace / 'subdir' / 'foo' / 'bar' / 'baz'
 
     # Test the command line option.
     cmd(['update', f'{PROTOCOL_FILE_ALLOW}', '--auto-cache', os.fspath(auto_cache_dir)])
     assert foo.check(dir=1)
     assert bar.check(dir=1)
-    assert (auto_cache_dir / "foo").check(dir=1)
-    assert not (auto_cache_dir / "bar").check(dir=1)
+    assert baz.check(dir=1)
     foo_hash = sorted(os.listdir(auto_cache_dir / 'foo'))[0]
+    auto_cache_dir_foo = auto_cache_dir / 'foo' / foo_hash
+    assert (auto_cache_dir_foo).check(dir=1)
+    assert not (auto_cache_dir / 'bar').check(dir=1)
+    assert not (auto_cache_dir / 'baz').check(dir=1)
+    # check for submodules in the remote repository, auto-cache  and workspace
     assert 'bar' in git_cmd(foo_remote, ['submodule', 'status'])
     assert 'bar' in git_cmd(foo, ['submodule', 'status'])
-    assert 'bar' in git_cmd(auto_cache_dir / "foo" / foo_hash, ['submodule', 'status'])
-    assert any(os.scandir(auto_cache_dir / "foo" / foo_hash / "bar"))
-    assert bar_head in rev_list(foo / "bar")
-    assert bar_head in rev_list(auto_cache_dir / "foo" / foo_hash / "bar")
+    assert 'bar' in git_cmd(auto_cache_dir_foo, ['submodule', 'status'])
+    assert 'baz' in git_cmd(foo_remote / 'bar', ['submodule', 'status'])
+    assert 'baz' in git_cmd(foo / 'bar', ['submodule', 'status'])
+    assert 'baz' in git_cmd(auto_cache_dir_foo / 'bar', ['submodule', 'status'])
+    # test that the submodule directories are not empty
+    assert any(os.scandir(auto_cache_dir_foo / 'bar'))
+    assert any(os.scandir(auto_cache_dir_foo / 'bar' / 'baz'))
+    # test that commits are correct 
+    assert bar_head in rev_list(foo / 'bar')
+    assert bar_head in rev_list(auto_cache_dir_foo / 'bar')
+    assert baz_head in rev_list(foo / 'bar' / 'baz')
+    assert baz_head in rev_list(auto_cache_dir_foo / 'bar' / 'baz')
     assert rev_parse(foo, 'HEAD') == foo_head
     assert rev_parse(bar, 'HEAD') == bar_head
+    assert rev_parse(baz, 'HEAD') == baz_head
 
-    # check that the remote urls are correct
+    # test that the remote urls are correct
     manifest = Manifest.from_topdir(topdir=workspace,
                                     import_flags=MIF.IGNORE_PROJECTS)
     projects = manifest.get_projects(['foo'])
     foo_project = projects[0]
-
     # assert remote url of foo project same as in manifest (with file://)
     res = foo_project.git('remote get-url origin',
                           capture_stdout=True, cwd=foo)
     assert res.stdout.decode('utf-8').strip() == f'file://{foo_remote}'
-
     # assert remote url of bar submodule
     res = foo_project.git('remote get-url origin',
                           capture_stdout=True, cwd=bar)
     assert res.stdout.decode('utf-8').strip() == bar_remote
+    # assert remote url of baz submodule
+    res = foo_project.git('remote get-url origin',
+                          capture_stdout=True, cwd=baz)
+    assert res.stdout.decode('utf-8').strip() == baz_remote
 
-    # make a commit within bar and check that it is available in workspace
-    add_commit(bar_remote, 'new commit')
+    # make a commit within baz and check that it is available in workspace
+    add_commit(baz_remote, 'new commit')
+    baz_head_new = rev_parse(baz_remote, 'HEAD')
+    foo_project.git(['fetch', '--', os.fspath(baz_remote)], cwd=foo_remote / 'bar' / 'baz')
+    foo_project.git(['checkout', baz_head_new], cwd=foo_remote / 'bar' / 'baz')
+    foo_project.git(['add', 'baz'], cwd=bar_remote)
+    add_commit(bar_remote, 'new baz submodule')
     bar_head_new = rev_parse(bar_remote, 'HEAD')
-    subprocess.check_call([GIT, 'fetch'], cwd=foo_remote / 'bar')
-    subprocess.check_call([GIT, 'checkout', bar_head_new], cwd=foo_remote / 'bar')
-    subprocess.check_call([GIT, 'add', 'bar'], cwd=foo_remote)
+    foo_project.git(['fetch', '--', os.fspath(bar_remote)], cwd=foo_remote / 'bar')
+    foo_project.git(['checkout', bar_head_new], cwd=foo_remote / 'bar')
+    foo_project.git(['add', 'bar'], cwd=foo_remote)
     add_commit(foo_remote, 'new bar submodule')
     foo_head_new = rev_parse(foo_remote, 'HEAD')
 
@@ -395,10 +422,13 @@ def test_update_auto_cache_submodules(tmpdir):
     mainfest_content = manifest_path.read_text().replace(foo_head, foo_head_new)
     manifest_path.write_text(mainfest_content)
     cmd(['update', f'{PROTOCOL_FILE_ALLOW}', '--auto-cache', os.fspath(auto_cache_dir)])
-    assert bar_head_new in rev_list(foo / "bar")
-    assert bar_head_new in rev_list(auto_cache_dir / "foo" / foo_hash / "bar")
+    assert bar_head_new in rev_list(foo / 'bar')
+    assert bar_head_new in rev_list(auto_cache_dir_foo / 'bar')
+    assert baz_head_new in rev_list(foo / 'bar' / 'baz')
+    assert baz_head_new in rev_list(auto_cache_dir_foo / 'bar' / 'baz')
     assert rev_parse(foo, 'HEAD') == foo_head_new
     assert rev_parse(bar, 'HEAD') == bar_head_new
+    assert rev_parse(baz, 'HEAD') == baz_head_new
 
 def test_update_caches_priorities(tmpdir):
     # Test that the correct cache is used if multiple caches are specified
