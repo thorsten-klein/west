@@ -68,14 +68,32 @@ class _InternalCF:
 
     @staticmethod
     def from_path(path: Path | None) -> '_InternalCF | None':
-        return _InternalCF(path) if path and path.exists() else None
+        return _InternalCF(path)
 
-    def __init__(self, path: Path):
-        self.path = path
+    def __init__(self, path: Path | None):
         self.cp = _configparser()
-        read_files = self.cp.read(path, encoding='utf-8')
-        if len(read_files) != 1:
-            raise FileNotFoundError(path)
+        self.path = path if path and path.exists() else None
+        self.dropins_dir = Path(f'{path}.d')
+        self.dropins = []
+        if self.dropins_dir.exists():
+            # dropin configs are applied in alphabetical order
+            for conf in sorted(self.dropins_dir.iterdir()):
+                # only consider .conf files
+                if conf.suffix.lower() == '.conf':
+                    self.dropins.append(self.dropins_dir / conf)
+        self._read(self.dropins + ([self.path] if self.path else []))
+
+    def _read(self, paths: list[Path]):
+        if paths:
+            read_files = self.cp.read([str(p) for p in paths], encoding='utf-8')
+            if not len(read_files):
+                raise FileNotFoundError(str(paths))
+
+    def _write(self):
+        if not self.path:
+            raise WestNotFound('No config file exists')
+        with open(self.path, 'w', encoding='utf-8') as f:
+            self.cp.write(f)
 
     def __contains__(self, option: str) -> bool:
         section, key = _InternalCF.parse_key(option)
@@ -110,8 +128,7 @@ class _InternalCF:
 
         self.cp[section][key] = value
 
-        with open(self.path, 'w', encoding='utf-8') as f:
-            self.cp.write(f)
+        self._write()
 
     def delete(self, option: str):
         section, key = _InternalCF.parse_key(option)
@@ -123,8 +140,7 @@ class _InternalCF:
         if not self.cp[section].items():
             del self.cp[section]
 
-        with open(self.path, 'w', encoding='utf-8') as f:
-            self.cp.write(f)
+        self._write()
 
 class ConfigFile(Enum):
     '''Types of west configuration file.
