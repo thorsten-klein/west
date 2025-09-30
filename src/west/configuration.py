@@ -71,7 +71,6 @@ class _InternalCF:
         return _InternalCF(path)
 
     def __init__(self, path: Path | None):
-        self.cp = _configparser()
         self.config_cp = _configparser()
         self.dropins_cp = _configparser()
         self.path = path if path and path.exists() else None
@@ -90,8 +89,6 @@ class _InternalCF:
             self.config_cp.read(self.path, encoding='utf-8')
         if self.dropins:
             self.dropins_cp.read(self.dropins, encoding='utf-8')
-        self.cp.read(self.dropins + ([self.path] if self.path else []),
-                     encoding='utf-8')
 
     def _write(self):
         if not self.path:
@@ -102,38 +99,39 @@ class _InternalCF:
     def __contains__(self, option: str) -> bool:
         section, key = _InternalCF.parse_key(option)
 
-        return section in self.cp and key in self.cp[section]
+        if section in self.config_cp and key in self.config_cp[section]:
+            return True
+        return section in self.dropins_cp and key in self.dropins_cp[section]
 
     def get(self, option: str):
-        return self._get(option, self.cp.get)
+        return self._get(option, self.config_cp.get, self.dropins_cp.get)
 
     def getboolean(self, option: str):
-        return self._get(option, self.cp.getboolean)
+        return self._get(option, self.config_cp.getboolean, self.dropins_cp.getboolean)
 
     def getint(self, option: str):
-        return self._get(option, self.cp.getint)
+        return self._get(option, self.config_cp.getint, self.dropins_cp.getint)
 
     def getfloat(self, option: str):
-        return self._get(option, self.cp.getfloat)
+        return self._get(option, self.config_cp.getfloat, self.dropins_cp.getfloat)
 
-    def _get(self, option, getter):
+    def _get(self, option, config_getter, dropins_getter):
         section, key = _InternalCF.parse_key(option)
-
-        try:
-            return getter(section, key)
-        except (configparser.NoOptionError, configparser.NoSectionError) as err:
-            raise KeyError(option) from err
+        if section in self.config_cp and key in self.config_cp[section]:
+            getter = config_getter
+        elif section in self.dropins_cp and key in self.dropins_cp[section]:
+            getter = dropins_getter
+        else:
+            raise KeyError(option)
+        return getter(section, key)
 
     def set(self, option: str, value: Any):
         section, key = _InternalCF.parse_key(option)
 
-        if section not in self.cp:
-            self.cp[section] = {}
         if section not in self.config_cp:
             self.config_cp[section] = {}
 
         # set value
-        self.cp[section][key] = value
         self.config_cp[section][key] = value
 
         # rewrite the config
@@ -142,13 +140,7 @@ class _InternalCF:
     def delete(self, option: str):
         section, key = _InternalCF.parse_key(option)
 
-        # option must be set so that it can be deleted
-        if section not in self.cp:
-            raise KeyError(option)
-        if key not in self.cp[section]:
-            raise KeyError(option)
-
-        # value must be in config (not dropins)
+        # option must be set in config so that it can be deleted
         if section not in self.config_cp:
             raise KeyError(option)
         if key not in self.config_cp[section]:
@@ -158,9 +150,6 @@ class _InternalCF:
         del self.config_cp[section][key]
         if not self.config_cp[section].items():
             del self.config_cp[section]
-        del self.cp[section][key]
-        if not self.cp[section].items():
-            del self.cp[section]
 
         # rewrite the config file
         self._write()
@@ -401,13 +390,14 @@ class Configuration:
         # function-and-global-state APIs.
 
         def load(cf: _InternalCF):
-            for section, contents in cf.cp.items():
-                if section == 'DEFAULT':
-                    continue
-                if section not in cp:
-                    cp.add_section(section)
-                for key, value in contents.items():
-                    cp[section][key] = value
+            for cp in [cf.dropins_cp, cf.config_cp]:
+                for section, contents in cp.items():
+                    if section == 'DEFAULT':
+                        continue
+                    if section not in cp:
+                        cp.add_section(section)
+                    for key, value in contents.items():
+                        cp[section][key] = value
 
         if self._system:
             load(self._system)
@@ -454,11 +444,12 @@ class Configuration:
         ret: dict[str, Any] = {}
         if cf is None:
             return ret
-        for section, contents in cf.cp.items():
-            if section == 'DEFAULT':
-                continue
-            for key, value in contents.items():
-                ret[f'{section}.{key}'] = value
+        for cp in [cf.dropins_cp, cf.config_cp]:
+            for section, contents in cp.items():
+                if section == 'DEFAULT':
+                    continue
+                for key, value in contents.items():
+                    ret[f'{section}.{key}'] = value
         return ret
 
 
