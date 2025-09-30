@@ -246,6 +246,9 @@ def test_config_d_local(test_case):
     stdout = cmd(f'config {flag} pytest.dropin-only')
     assert 'from dropin' == stdout.rstrip()
 
+    # delete a value that is set in a dropin config should fail
+    cmd_raises(f'config {flag} -d pytest.dropin-only', subprocess.CalledProcessError)
+
     # remove config file
     config_path.unlink()
 
@@ -256,13 +259,12 @@ def test_config_d_local(test_case):
     # dropin config values are still set
     stdout = cmd(f'config {flag} pytest.dropin-only')
     assert 'from dropin' == stdout.rstrip()
-    # value is now used from dropin config as actual config does not exist
+    # value is now used from dropin, since config does not exist
     stdout = cmd(f'config {flag} pytest.key')
     assert 'from dropin' == stdout.rstrip()
 
-    # delete a value that is not set in the actual config
-    stderr = cmd_raises(f'config {flag} -d pytest.key', subprocess.CalledProcessError)
-    assert 'FATAL ERROR: No config file exists' in stderr.rstrip()
+    # delete a value that is not set in the config should fail
+    cmd_raises(f'config {flag} -d pytest.key', subprocess.CalledProcessError)
 
 
 def test_local_creation_with_topdir():

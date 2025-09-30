@@ -72,6 +72,8 @@ class _InternalCF:
 
     def __init__(self, path: Path | None):
         self.cp = _configparser()
+        self.config_cp = _configparser()
+        self.dropins_cp = _configparser()
         self.path = path if path and path.exists() else None
         self.dropins_dir = Path(f'{path}.d')
         self.dropins = []
@@ -81,19 +83,21 @@ class _InternalCF:
                 # only consider .conf files
                 if conf.suffix.lower() == '.conf':
                     self.dropins.append(self.dropins_dir / conf)
-        self._read(self.dropins + ([self.path] if self.path else []))
+        self._read()
 
-    def _read(self, paths: list[Path]):
-        if paths:
-            read_files = self.cp.read([str(p) for p in paths], encoding='utf-8')
-            if not len(read_files):
-                raise FileNotFoundError(str(paths))
+    def _read(self):
+        if self.path:
+            self.config_cp.read(self.path, encoding='utf-8')
+        if self.dropins:
+            self.dropins_cp.read(self.dropins, encoding='utf-8')
+        self.cp.read(self.dropins + ([self.path] if self.path else []),
+                     encoding='utf-8')
 
     def _write(self):
         if not self.path:
             raise WestNotFound('No config file exists')
         with open(self.path, 'w', encoding='utf-8') as f:
-            self.cp.write(f)
+            self.config_cp.write(f)
 
     def __contains__(self, option: str) -> bool:
         section, key = _InternalCF.parse_key(option)
@@ -125,21 +129,40 @@ class _InternalCF:
 
         if section not in self.cp:
             self.cp[section] = {}
+        if section not in self.config_cp:
+            self.config_cp[section] = {}
 
+        # set value
         self.cp[section][key] = value
+        self.config_cp[section][key] = value
 
+        # rewrite the config
         self._write()
 
     def delete(self, option: str):
         section, key = _InternalCF.parse_key(option)
 
+        # option must be set so that it can be deleted
         if section not in self.cp:
             raise KeyError(option)
+        if key not in self.cp[section]:
+            raise KeyError(option)
 
+        # value must be in config (not dropins)
+        if section not in self.config_cp:
+            raise KeyError(option)
+        if key not in self.config_cp[section]:
+            raise KeyError(option)
+
+        # remove options
+        del self.config_cp[section][key]
+        if not self.config_cp[section].items():
+            del self.config_cp[section]
         del self.cp[section][key]
         if not self.cp[section].items():
             del self.cp[section]
 
+        # rewrite the config file
         self._write()
 
 class ConfigFile(Enum):
