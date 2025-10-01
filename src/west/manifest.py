@@ -268,6 +268,8 @@ def _manifest_content_at(project: 'Project', path: PathType, mf_encoding: str,
     _logger.debug(f'{project.name}: looking up path {path} type at {rev}')
 
     # Returns 'blob', 'tree', etc. for path at revision, if it exists.
+    if project.is_local():
+        return (Path(project.path) / path).read_text()
     out = project.git(['ls-tree', rev, path], capture_stdout=True,
                       capture_stderr=True).stdout
 
@@ -1022,6 +1024,9 @@ class Project:
         else:
             raise RuntimeError(f'unexpected git merge-base result {rc}')
 
+    def is_local(self):
+        return self.url in ['local']
+
     def is_up_to_date_with(self, rev: str,
                            cwd: PathType | None = None) -> bool:
         '''Check if the project is up to date with *rev*, returning
@@ -1057,6 +1062,9 @@ class Project:
         '''
         if not self.abspath or not os.path.isdir(self.abspath):
             return False
+
+        if self.is_local():
+            return True
 
         # --is-inside-work-tree doesn't require that the directory is
         # the top-level directory of a Git repository. Use --show-cdup
@@ -2371,6 +2379,8 @@ class Manifest:
             if repo_path:
                 self._malformed(f'project {name} has "repo_path: {repo_path}" '
                                 f'and "url: {url}"')
+        elif remote == "local":
+            url = 'local'
         elif remote:
             if remote not in url_bases:
                 self._malformed(f'project {name} remote {remote} '
@@ -2402,6 +2412,12 @@ class Manifest:
         # anything, we can always revisit, maybe adding a 'nativepath'
         # attribute or something like that.
         path = (self._ctx.path_prefix / pfx / pd.get('path', name)).as_posix()
+
+        if url in ['local'] and self.path:
+            # the path of a local project is relative to the current manifest
+            manifest_dir = Path(self.path).parent
+            path_rel = os.path.relpath(manifest_dir / path, self.topdir)
+            path = Path(path_rel).as_posix()
 
         raw_groups = pd.get('groups')
         if raw_groups:
@@ -2452,7 +2468,7 @@ class Manifest:
                             f'workspace topdir' +
                             (f' ({self.topdir})' if self.topdir else ''))
 
-        if ret_norm.startswith('..'):
+        if ret_norm.startswith('..') and not ret.is_local():
             self._malformed(f'project "{name}" path {ret.path} '
                             f'normalizes to {ret_norm}, which escapes '
                             f'the workspace topdir')
@@ -2614,6 +2630,7 @@ class Manifest:
 
     def _import_content_from_project(self, project: Project,
                                      path: str) -> ImportedContentType:
+
         if not (self._ctx.import_flags & ImportFlag.FORCE_PROJECTS) and \
            project.is_cloned():
             try:
@@ -2629,6 +2646,9 @@ class Manifest:
                 # We may need a new manifest-rev, e.g. if revision is
                 # a SHA we don't have yet.
                 content = self._ctx.project_importer(project, path)
+        elif project.is_local():
+            manifest_file = Path(project.path) / path
+            content = manifest_file.read_text()
         else:
             # We need to clone this project, or we were specifically
             # asked to use the importer.

@@ -1460,6 +1460,10 @@ class Update(_ProjectCommand):
 
         self.banner(f'updating {project.name_and_path}:')
 
+        if project.is_local():
+            self.inf(f'west update: project {project.name} is local')
+            return
+
         # Make sure we've got a project to work with.
         self.ensure_cloned(project, stats, take_stats)
 
@@ -1721,7 +1725,6 @@ class Update(_ProjectCommand):
     def set_new_manifest_rev(self, project, stats, take_stats):
         # update() helper. Make sure project's manifest-rev is set to
         # the latest value it should be.
-
         if self.fs == 'always' or _rev_type(project) not in ('tag', 'commit'):
             self.fetch(project, stats, take_stats)
         else:
@@ -1742,7 +1745,6 @@ class Update(_ProjectCommand):
         # newly-fetched SHA corresponding to rev. "Hopefully" because
         # there are many ways to spell a revision, and they haven't all
         # been extensively tested.
-
         if take_stats:
             start = perf_counter()
 
@@ -1830,7 +1832,6 @@ class Update(_ProjectCommand):
     @staticmethod
     def ensure_head_ok(project, stats, take_stats):
         # update() helper. Ensure HEAD points at something reasonable.
-
         if take_stats:
             start = perf_counter()
         head_ok = _head_ok(project)
@@ -1857,7 +1858,6 @@ class Update(_ProjectCommand):
 
     def manifest_rev_sha(self, project, stats, take_stats):
         # update() helper. Get the SHA for manifest-rev.
-
         try:
             if take_stats:
                 start = perf_counter()
