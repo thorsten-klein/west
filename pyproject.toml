@@ -114,5 +114,7 @@ env = {PYTHONIOENCODING = "utf-8"}
 
 [tool.poe.tasks]
 lint = "ruff check ."
+format_check = "ruff format --check ."
+format = "ruff format ."
 types = "mypy --package west"
-all = ["test", "lint", "types"]
+all = ["test", "lint", "format", "types"]
