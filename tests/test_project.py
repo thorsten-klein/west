@@ -186,6 +186,62 @@ def test_workspace_local(repos_tmpdir):
         assert (ws / project_subdir / '.git').check(dir=1)
 
 
+def test_workspace_local_imports(repos_tmpdir):
+    remote_zephyr = repos_tmpdir / 'repos' / 'zephyr'
+    projects_dir = repos_tmpdir / 'projects'
+    projects_dir.mkdir()
+
+    # create a local base project with a west.yml
+    project_base = projects_dir / 'base'
+    project_base.mkdir()
+    with open(project_base / 'west.yml', 'w') as f:
+        f.write(textwrap.dedent(f'''\
+            manifest:
+              remotes:
+                - name: upstream
+                  url-base: {os.path.dirname(remote_zephyr)}
+              projects:
+              - name: zephyr
+                remote: upstream
+                path: zephyr-rtos
+                import: True
+        '''))
+
+    # create another project with another west.yml (stacked on base)
+    project_middle = projects_dir / 'middle'
+    project_middle.mkdir()
+    with open(project_middle / 'west.yml', 'w') as f:
+        f.write(textwrap.dedent('''\
+            manifest:
+              self:
+                import: ../base
+        '''))
+
+    # create another project with another west.yml (stacked on base)
+    project_app = projects_dir / 'app'
+    project_app.mkdir()
+    with open(project_app / 'west.yml', 'w') as f:
+        f.write(textwrap.dedent('''\
+            manifest:
+              self:
+                import: ../middle
+        '''))
+
+    # init workspace in projects_dir (project_app's parent)
+    cmd(['init', '-l', project_app])
+
+    # update workspace in projects_dir
+    cmd('update', cwd=projects_dir)
+
+    ws = projects_dir
+    # zephyr projects from base are cloned
+    for project_subdir in [Path('subdir') / 'Kconfiglib',
+                           'tagged_repo',
+                           'net-tools',
+                           'zephyr-rtos']:
+        assert (ws / project_subdir).check(dir=1)
+        assert (ws / project_subdir / '.git').check(dir=1)
+
 def test_list(west_update_tmpdir):
     # Projects shall be listed in the order they appear in the manifest.
     # Check the behavior for some format arguments of interest as well.
