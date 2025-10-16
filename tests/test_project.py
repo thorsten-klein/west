@@ -139,8 +139,8 @@ def test_workspace_modify_url_replace(tmpdir, repos_tmpdir):
         files={
             'west.yml': textwrap.dedent('''
             manifest:
-              import-modifications:
-                url-replace:
+              modifications:
+                url:
                 - old: xxx
                   new: yyy
               remotes:
@@ -165,8 +165,8 @@ def test_workspace_modify_url_replace(tmpdir, repos_tmpdir):
         files={
             'west.yml': f'''
                       manifest:
-                        import-modifications:
-                          url-replace:
+                        modifications:
+                          url:
                           - old: yyy
                             new: zzz
                         projects:
@@ -184,8 +184,8 @@ def test_workspace_modify_url_replace(tmpdir, repos_tmpdir):
         f.write(
             textwrap.dedent(f'''\
             manifest:
-              import-modifications:
-                url-replace:
+              modifications:
+                url:
                   - old: zzz
                     new: {os.path.dirname(remote_zephyr)}
               projects:
@@ -255,8 +255,8 @@ def test_workspace_modify_url_replace_with_self_import(repos_tmpdir):
             textwrap.dedent('''\
             manifest:
               # this should not have any effect since there are no imports
-              import-modifications:
-                url-replace:
+              modifications:
+                url:
                   - old: nonexistent
                     new: from-another
         ''')
@@ -269,8 +269,8 @@ def test_workspace_modify_url_replace_with_self_import(repos_tmpdir):
         f.write(
             textwrap.dedent(f'''\
             manifest:
-              import-modifications:
-                url-replace:
+              modifications:
+                url:
                   - old: nonexistent
                     new: {os.path.dirname(remote_zephyr)}
               self:
