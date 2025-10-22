@@ -53,6 +53,10 @@ class WestNotFound(RuntimeError):
     '''Neither the current directory nor any parent has a west workspace.'''
 
 
+def paths_to_str(paths: list[pathlib.Path], sep: str = os.pathsep) -> str:
+    return sep.join([str(p) for p in paths])
+
+
 def west_dir(start: PathType | None = None) -> str:
     '''Returns the absolute path of the workspace's .west directory.
 
