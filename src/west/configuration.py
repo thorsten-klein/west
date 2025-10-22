@@ -44,7 +44,7 @@ from enum import Enum
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
-from west.util import WEST_DIR, PathType, WestNotFound, west_dir
+from west.util import WEST_DIR, PathType, WestNotFound, paths_to_str, west_dir
 
 
 class MalformedConfig(Exception):
@@ -70,19 +70,36 @@ class _InternalCF:
         return section_child
 
     @staticmethod
-    def from_path(path: Path | None) -> '_InternalCF | None':
-        return _InternalCF(path) if path and path.exists() else None
+    def from_path(path: Path | list[Path] | None) -> '_InternalCF | None':
+        if not path:
+            return None
 
-    def __init__(self, path: Path):
-        self.path = path
+        # Normalize to a list of existing paths
+        paths = path
+        if isinstance(paths, Path):
+            paths = [Path(p) for p in str(paths).split(os.pathsep)]
+        paths = [p for p in paths if p.exists()]
+        return _InternalCF(paths) if paths else None
+
+    def __init__(self, paths: list[Path]):
         self.cp = _configparser()
-        read_files = self.cp.read(path, encoding='utf-8')
-        if len(read_files) != 1:
-            raise FileNotFoundError(path)
+        self.paths = paths
+        read_files = self.cp.read(self.paths, encoding='utf-8')
+        if len(read_files) != len(self.paths):
+            raise WestNotFound(f"Error while reading one of '{paths_to_str(paths)}'")
+
+    def _write(self):
+        if not self.paths:
+            raise WestNotFound('No config file exists that can be written')
+        if len(self.paths) > 1:
+            raise WestNotFound(
+                f'Cannot write if multiple configs in use: {paths_to_str(self.paths)}'
+            )
+        with open(self.paths[0], 'w', encoding='utf-8') as f:
+            self.cp.write(f)
 
     def __contains__(self, option: str) -> bool:
         section, key = _InternalCF.parse_key(option)
-
         return section in self.cp and key in self.cp[section]
 
     def get(self, option: str):
@@ -97,37 +114,31 @@ class _InternalCF:
     def getfloat(self, option: str):
         return self._get(option, self.cp.getfloat)
 
-    def _get(self, option, getter):
+    def _get(self, option, config_getter):
         section, key = _InternalCF.parse_key(option)
-
-        try:
-            return getter(section, key)
-        except (configparser.NoOptionError, configparser.NoSectionError) as err:
-            raise KeyError(option) from err
+        if section in self.cp and key in self.cp[section]:
+            getter = config_getter
+        else:
+            raise KeyError(option)
+        return getter(section, key)
 
     def set(self, option: str, value: Any):
         section, key = _InternalCF.parse_key(option)
-
         if section not in self.cp:
             self.cp[section] = {}
-
         self.cp[section][key] = value
-
-        with open(self.path, 'w', encoding='utf-8') as f:
-            self.cp.write(f)
+        self._write()
 
     def delete(self, option: str):
         section, key = _InternalCF.parse_key(option)
-
-        if section not in self.cp:
+        if option not in self:
             raise KeyError(option)
 
         del self.cp[section][key]
         if not self.cp[section].items():
             del self.cp[section]
 
-        with open(self.path, 'w', encoding='utf-8') as f:
-            self.cp.write(f)
+        self._write()
 
 
 class ConfigFile(Enum):
@@ -186,11 +197,11 @@ class Configuration:
     def get_paths(self, location: ConfigFile = ConfigFile.ALL):
         ret = []
         if self._global and location in [ConfigFile.GLOBAL, ConfigFile.ALL]:
-            ret.append(self._global.path)
+            ret.extend(self._global.paths)
         if self._system and location in [ConfigFile.SYSTEM, ConfigFile.ALL]:
-            ret.append(self._system.path)
+            ret.extend(self._system.paths)
         if self._local and location in [ConfigFile.LOCAL, ConfigFile.ALL]:
-            ret.append(self._local.path)
+            ret.extend(self._local.paths)
         return ret
 
     def get(
@@ -282,7 +293,9 @@ class Configuration:
         :param value: value to set option to
         :param configfile: type of config file to set the value in
         '''
-
+        paths = self.get_paths(configfile)
+        if len(paths) > 1:
+            raise WestNotFound(f'Cannot write if multiple configs in use: {paths_to_str(paths)}')
         if configfile == ConfigFile.ALL:
             # We need a real configuration file; ALL doesn't make sense here.
             raise ValueError(configfile)
