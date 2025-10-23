@@ -2482,13 +2482,14 @@ class Manifest:
         # to POSIX style in all circumstances. If this breaks
         # anything, we can always revisit, maybe adding a 'nativepath'
         # attribute or something like that.
-        path = (self._ctx.path_prefix / pfx / pd.get('path', name)).as_posix()
+        path = self._ctx.path_prefix / pfx / pd.get('path', name)
 
-        if url in ['local'] and self.path:
-            # the path of a local project is relative to the current manifest
-            manifest_dir = Path(self.path).parent
-            path_rel = os.path.relpath(manifest_dir / path, self.topdir)
-            path = Path(path_rel).as_posix()
+        if remote == 'local':
+            if self.repo_path:
+                path = Path(self.repo_path) / path
+            else:
+                # the path of a local project is relative to the current manifest
+                path = self._ctx.current_relpath / path
 
         raw_groups = pd.get('groups')
         if raw_groups:
@@ -2511,7 +2512,7 @@ class Manifest:
             url,
             description=pd.get('description'),
             revision=pd.get('revision', defaults.revision),
-            path=path,
+            path=os.path.normpath(path),
             submodules=self._load_submodules(pd.get('submodules'), f'project {name}'),
             clone_depth=pd.get('clone-depth'),
             west_commands=pd.get('west-commands'),
@@ -2671,16 +2672,16 @@ class Manifest:
 
         if imap is not None:
             imap_filter = _compose_imap_filters(self._ctx.imap_filter, _imap_filter(imap))
-            imap_path_prefix = imap.path_prefix
+            imap_path_prefix = self._ctx.path_prefix / imap.path_prefix
         else:
             imap_filter = self._ctx.imap_filter
-            imap_path_prefix = '.'
+            path_prefix = self._ctx.path_prefix
 
         child_ctx = self._ctx._replace(
             imap_filter=imap_filter,
-            path_prefix=self._ctx.path_prefix / imap_path_prefix,
+            path_prefix=path_prefix,
             current_abspath=None,
-            current_relpath=None,
+            current_relpath=Path(project.path),
             current_data=data,
             current_repo_abspath=(Path(project.abspath) if project.abspath else None),
             # If the manifest data we imported from the project has
