@@ -202,6 +202,7 @@ class _defaults(NamedTuple):
 
 
 _DEFAULT_REV = 'master'
+_DEFAULT_N_A = 'N/A'
 _WEST_YML = 'west.yml'
 _SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "manifest-schema.yml")
 _SCHEMA_VER = parse_version(SCHEMA_VERSION)
@@ -899,7 +900,6 @@ class Project:
         self.description = description
         self.url = url
         self.submodules = submodules
-        self.revision = revision or _DEFAULT_REV
         self.clone_depth = clone_depth
         self.path = os.fspath(path or name)
         self.west_commands = _west_commands_list(west_commands)
@@ -907,6 +907,10 @@ class Project:
         self.remote_name = remote_name or 'origin'
         self.groups: GroupsType = groups or []
         self.userdata: Any = userdata
+        if self.is_local():
+            self.revision = _DEFAULT_N_A
+        else:
+            self.revision = revision or _DEFAULT_REV
 
     @property
     def path(self) -> str:
@@ -2102,6 +2106,9 @@ class Manifest:
         # Add this manifest's projects to the map, and handle imported
         # projects and group-filter values.
         url_bases = {r['name']: r['url-base'] for r in manifest_data.get('remotes', [])}
+        if 'local' in url_bases:
+            self._malformed("remote 'local' is a special remote and cannot be overridden")
+
         defaults = self._load_defaults(manifest_data.get('defaults', {}), url_bases)
         self._load_projects(manifest_data, url_bases, defaults)
 
@@ -2672,7 +2679,7 @@ class Manifest:
 
         if imap is not None:
             imap_filter = _compose_imap_filters(self._ctx.imap_filter, _imap_filter(imap))
-            imap_path_prefix = self._ctx.path_prefix / imap.path_prefix
+            path_prefix = self._ctx.path_prefix / imap.path_prefix
         else:
             imap_filter = self._ctx.imap_filter
             path_prefix = self._ctx.path_prefix

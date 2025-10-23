@@ -528,8 +528,10 @@ The following arguments are available:
 
     def do_run(self, args, user_args):
         def sha_thunk(project):
-            self.die_if_no_git()
+            if project.is_local():
+                return f'{"N/A":40}'
 
+            self.die_if_no_git()
             if not project.is_cloned():
                 self.die(
                     f'cannot get sha for uncloned project {project.name}; '
@@ -592,14 +594,21 @@ The following arguments are available:
                     apath = project.abspath
                     ppath = project.posixpath
 
+                # determine the project url
+                url = 'N/A'
+                revision = 'N/A'
+                if not project.is_local():
+                    url = project.url or url
+                    revision = project.revision or revision
+
                 result = args.format.format(
                     name=project.name,
                     description=project.description or "None",
-                    url=project.url or 'N/A',
+                    url=url,
+                    revision=revision,
                     path=path,
                     abspath=apath,
                     posixpath=ppath,
-                    revision=project.revision or 'N/A',
                     clone_depth=project.clone_depth or "None",
                     cloned=delay(cloned_thunk, project),
                     active=delay(active_thunk, project),
@@ -884,6 +893,8 @@ class Compare(_ProjectCommand):
         failed = []
         printed_output = False
         for project in self._cloned_projects(args, only_active=not args.all):
+            if project.is_local():
+                continue
             if isinstance(project, ManifestProject):
                 # West doesn't track the relationship between the manifest
                 # repository and any remote, but users are still interested
@@ -1024,6 +1035,8 @@ class Diff(_ProjectCommand):
         # which it won't do ordinarily since stdout is not a terminal.
         color = ['--color=always'] if self.color_ui else []
         for project in self._cloned_projects(args, only_active=not args.all):
+            if project.is_local():
+                continue
             diff_commit = (
                 ['manifest-rev']  # see #719 and #747
                 # Special-case the manifest repository while it's
@@ -1111,7 +1124,8 @@ class Status(_ProjectCommand):
             #      skip output for the project entirely.
             #
             # In verbose mode, we always print output.
-
+            if project.is_local():
+                continue
             try:
                 if not (self.verbosity >= Verbosity.DBG or self._has_nonempty_status(project)):
                     continue
@@ -2105,6 +2119,18 @@ class ForAll(_ProjectCommand):
             help='''run commands from this directory;
                     defaults to each project's paths if omitted''',
         )
+        parser.add_argument(
+            '--local',
+            dest='local',
+            action=argparse.BooleanOptionalAction,
+            help='''run command only on local projects (default: True)''',
+        )
+        parser.add_argument(
+            '--remote',
+            dest='remote',
+            action=argparse.BooleanOptionalAction,
+            help='''run command on remote projects (default: True)''',
+        )
         (parser.add_argument('-a', '--all', action='store_true', help='include inactive projects'),)
         parser.add_argument(
             '-g',
@@ -2130,7 +2156,36 @@ class ForAll(_ProjectCommand):
         failed = []
         group_set = set(args.groups)
         env = os.environ.copy()
+
+        # Truth matrix for --local and --remote
+        # ┌──────────┬──────────┬────────────────┬────────────────┐
+        # │ --local  │ --remote │ projects_local │ projects_remote│
+        # ├──────────┼──────────┼────────────────┼────────────────┤
+        # │  None    │  None    │ True           │ True           │  # default: both
+        # │  True    │  None    │ True           │ False          │  # only local
+        # │  False   │  None    │ False          │ True           │  # only remote
+        # │  None    │  True    │ False          │ True           │  # only remote
+        # │  None    │  False   │ True           │ False          │  # only local
+        # │  True    │  True    │ True           │ True           │  # both
+        # │  False   │  False   │ False          │ False          │  # none
+        # └──────────┴──────────┴────────────────┴────────────────┘
+
+        # use False if it was explicitly set to False
+        projects_remote = False if args.remote is False else True
+        projects_local = False if args.local is False else True
+
+        # handle if only --local or --remote is specified
+        if args.local and args.remote is None:
+            projects_remote = False
+        if args.remote and args.local is None:
+            projects_local = False
+
+        # iterate over all projects from manifest
         for project in self._cloned_projects(args, only_active=not args.all):
+            if project.is_local() and not projects_local:
+                continue
+            if not project.is_local() and not projects_remote:
+                continue
             if group_set and not group_set.intersection(set(project.groups)):
                 continue
 
@@ -2307,6 +2362,8 @@ class Grep(_ProjectCommand):
         command_list = [self.tool_path(tool, args)] + self.tool_args(tool, tool_cmdline_args)
         failed = []
         for project in self._cloned_projects(args, only_active=not args.projects):
+            if project.is_local():
+                continue
             completed_process = self.run_subprocess(
                 command_list, capture_output=True, text=True, cwd=project.abspath
             )

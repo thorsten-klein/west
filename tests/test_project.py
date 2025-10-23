@@ -122,7 +122,8 @@ def test_workspace(west_update_tmpdir):
 
 
 def test_workspace_local(repos_tmpdir):
-    remote_zephyr = repos_tmpdir / 'repos' / 'zephyr'
+    remote_repos = repos_tmpdir / 'repos'
+    remote_zephyr = remote_repos / 'zephyr'
     projects_dir = repos_tmpdir / 'projects'
     projects_dir.mkdir()
 
@@ -163,14 +164,16 @@ def test_workspace_local(repos_tmpdir):
     project_app = projects_dir / 'app'
     project_app.mkdir()
     with open(project_app / 'west.yml', 'w') as f:
-        f.write(textwrap.dedent('''\
+        f.write(
+            textwrap.dedent('''\
             manifest:
               projects:
               - name: middle
                 remote: local
                 path: ../middle
                 import: true
-        '''))
+        ''')
+        )
 
     # init workspace in projects_dir (project_app's parent)
     cmd(['init', '-l', project_app])
@@ -189,6 +192,82 @@ def test_workspace_local(repos_tmpdir):
         assert (ws / project_subdir).check(dir=1)
         assert (ws / project_subdir / '.git').check(dir=1)
 
+    # list projects
+    stdout = cmd('list', cwd=projects_dir)
+    stdout_split = [line.split() for line in stdout.splitlines()]
+    expected = [
+        ['manifest', 'app', 'HEAD', 'N/A'],
+        ['middle', 'middle', 'N/A', 'N/A'],
+        ['base', 'base', 'N/A', 'N/A'],
+        ['zephyr', 'zephyr-rtos', 'master', f'{remote_zephyr}'],
+        ['Kconfiglib', 'subdir/Kconfiglib', 'zephyr', f'{remote_repos / "Kconfiglib"}'],
+        ['tagged_repo', 'tagged_repo', 'v1.0', f'{remote_repos / "tagged_repo"}'],
+        ['net-tools', 'net-tools', 'master', f'{remote_repos / "net-tools"}'],
+    ]
+    assert str(stdout_split) == str(expected)
+
+    # -----------------------------
+    # Test "forall"
+    # -----------------------------
+    exp_forall_remote = [
+        '=== running "" in zephyr (zephyr-rtos):',
+        '=== running "" in Kconfiglib (subdir/Kconfiglib):',
+        '=== running "" in tagged_repo (tagged_repo):',
+        '=== running "" in net-tools (net-tools):',
+    ]
+    exp_forall_local = [
+        '=== running "" in middle (middle):',
+        '=== running "" in base (base):',
+    ]
+
+    # run forall (default)
+    stdout = cmd(['forall', '-c', ''], cwd=projects_dir)
+    assert stdout.splitlines() == exp_forall_local + exp_forall_remote
+
+    # run forall --no-remote
+    stdout = cmd(['forall', '--no-remote', '-c', ''], cwd=projects_dir)
+    assert stdout.splitlines() == exp_forall_local
+
+    # run forall --no-local
+    stdout = cmd(['forall', '--no-local', '-c', ''], cwd=projects_dir)
+    assert stdout.splitlines() == exp_forall_remote
+
+    # run forall --local
+    stdout = cmd(['forall', '--local', '-c', ''], cwd=projects_dir)
+    assert stdout.splitlines() == exp_forall_local
+
+    # run forall --remote
+    stdout = cmd(['forall', '--remote', '-c', ''], cwd=projects_dir)
+    assert stdout.splitlines() == exp_forall_remote
+
+    # run forall --no-remote --no-local
+    stdout = cmd(['forall', '--no-remote', '--no-local', '-c', ''], cwd=projects_dir)
+    assert stdout.splitlines() == []
+
+    # -----------------------------
+    # Test "status"
+    # -----------------------------
+    stdout = cmd(['status'], cwd=projects_dir)
+    assert stdout == ''
+
+    # -----------------------------
+    # Test "compare"
+    # -----------------------------
+    stdout = cmd(['compare'], cwd=projects_dir)
+    assert stdout == ''
+
+    # -----------------------------
+    # Test "diff"
+    # -----------------------------
+    stdout = cmd(['diff'], cwd=projects_dir)
+    assert stdout.rstrip() == 'Empty diff in 4 projects.'
+
+    # -----------------------------
+    # Test "grep"
+    # -----------------------------
+    stdout = cmd(['grep', 'dummy string to grep'], cwd=projects_dir)
+    assert stdout == ""
+
 
 def test_workspace_local_imports(repos_tmpdir):
     remote_zephyr = repos_tmpdir / 'repos' / 'zephyr'
@@ -199,7 +278,8 @@ def test_workspace_local_imports(repos_tmpdir):
     project_base = projects_dir / 'base'
     project_base.mkdir()
     with open(project_base / 'west.yml', 'w') as f:
-        f.write(textwrap.dedent(f'''\
+        f.write(
+            textwrap.dedent(f'''\
             manifest:
               remotes:
                 - name: upstream
@@ -209,27 +289,32 @@ def test_workspace_local_imports(repos_tmpdir):
                 remote: upstream
                 path: zephyr-rtos
                 import: True
-        '''))
+        ''')
+        )
 
     # create another project with another west.yml (stacked on base)
     project_middle = projects_dir / 'middle'
     project_middle.mkdir()
     with open(project_middle / 'west.yml', 'w') as f:
-        f.write(textwrap.dedent('''\
+        f.write(
+            textwrap.dedent('''\
             manifest:
               self:
                 import: ../base
-        '''))
+        ''')
+        )
 
     # create another project with another west.yml (stacked on base)
     project_app = projects_dir / 'app'
     project_app.mkdir()
     with open(project_app / 'west.yml', 'w') as f:
-        f.write(textwrap.dedent('''\
+        f.write(
+            textwrap.dedent('''\
             manifest:
               self:
                 import: ../middle
-        '''))
+        ''')
+        )
 
     # init workspace in projects_dir (project_app's parent)
     cmd(['init', '-l', project_app])
@@ -239,12 +324,15 @@ def test_workspace_local_imports(repos_tmpdir):
 
     ws = projects_dir
     # zephyr projects from base are cloned
-    for project_subdir in [Path('subdir') / 'Kconfiglib',
-                           'tagged_repo',
-                           'net-tools',
-                           'zephyr-rtos']:
+    for project_subdir in [
+        Path('subdir') / 'Kconfiglib',
+        'tagged_repo',
+        'net-tools',
+        'zephyr-rtos',
+    ]:
         assert (ws / project_subdir).check(dir=1)
         assert (ws / project_subdir / '.git').check(dir=1)
+
 
 def test_list(west_update_tmpdir):
     # Projects shall be listed in the order they appear in the manifest.
