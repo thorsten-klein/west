@@ -145,9 +145,9 @@ def test_workspace_local(repos_tmpdir):
         )
 
     # create another project with another west.yml (stacked on base)
-    project_app = projects_dir / 'app'
-    project_app.mkdir()
-    with open(project_app / 'west.yml', 'w') as f:
+    project_middle = projects_dir / 'middle'
+    project_middle.mkdir()
+    with open(project_middle / 'west.yml', 'w') as f:
         f.write(
             textwrap.dedent('''\
             manifest:
@@ -158,6 +158,19 @@ def test_workspace_local(repos_tmpdir):
                 import: true
         ''')
         )
+
+    # create another project with another west.yml (stacked on base)
+    project_app = projects_dir / 'app'
+    project_app.mkdir()
+    with open(project_app / 'west.yml', 'w') as f:
+        f.write(textwrap.dedent('''\
+            manifest:
+              projects:
+              - name: middle
+                remote: local
+                path: ../middle
+                import: true
+        '''))
 
     # init workspace in projects_dir (project_app's parent)
     cmd(['init', '-l', project_app])
