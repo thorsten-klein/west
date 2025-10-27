@@ -121,6 +121,9 @@ class _ProjectCommand(WestCommand):
         # manually use Popen in order to try to exit as quickly as
         # possible if 'git status' prints anything.
 
+        if project.is_local():
+            return False
+
         popen = subprocess.Popen(
             ['git', 'status', '--porcelain'],
             stdout=subprocess.PIPE,
@@ -910,9 +913,8 @@ class Compare(_ProjectCommand):
             # In verbose mode, we always print output.
 
             def has_checked_out_branch(project):
-                if self.ignore_branches:
+                if self.ignore_branches or project.is_local():
                     return False
-
                 return bool(
                     project.git(
                         ['branch', '--show-current'], capture_stdout=True, capture_stderr=True
@@ -1024,6 +1026,8 @@ class Diff(_ProjectCommand):
         # which it won't do ordinarily since stdout is not a terminal.
         color = ['--color=always'] if self.color_ui else []
         for project in self._cloned_projects(args, only_active=not args.all):
+            if project.is_local():
+                continue
             diff_commit = (
                 ['manifest-rev']  # see #719 and #747
                 # Special-case the manifest repository while it's
@@ -1600,6 +1604,10 @@ class Update(_ProjectCommand):
 
         self.banner(f'updating {project.name_and_path}:')
 
+        if project.is_local():
+            self.inf(f'west update: project {project.name} is local')
+            return
+
         # Make sure we've got a project to work with.
         self.ensure_cloned(project, stats, take_stats)
 
@@ -2105,6 +2113,18 @@ class ForAll(_ProjectCommand):
             help='''run commands from this directory;
                     defaults to each project's paths if omitted''',
         )
+        parser.add_argument(
+            '--local',
+            dest='local',
+            action=argparse.BooleanOptionalAction,
+            help='''run command only on local projects (default: True)''',
+        )
+        parser.add_argument(
+            '--remote',
+            dest='remote',
+            action=argparse.BooleanOptionalAction,
+            help='''run command on remote projects (default: True)''',
+        )
         (parser.add_argument('-a', '--all', action='store_true', help='include inactive projects'),)
         parser.add_argument(
             '-g',
@@ -2130,15 +2150,44 @@ class ForAll(_ProjectCommand):
         failed = []
         group_set = set(args.groups)
         env = os.environ.copy()
+
+        # Truth matrix for considered projects based on --local and --remote
+        # ┌──────────┬──────────┬───────┬────────┐
+        # │ --local  │ --remote │ local │ remote │
+        # ├──────────┼──────────┼───────┼────────┤
+        # │  None    │  None    │ True  │ True   │  # default: both
+        # │  True    │  None    │ True  │ False  │  # only local
+        # │  False   │  None    │ False │ True   │  # only remote
+        # │  None    │  True    │ False │ True   │  # only remote
+        # │  None    │  False   │ True  │ False  │  # only local
+        # │  True    │  True    │ True  │ True   │  # both
+        # │  False   │  False   │ False │ False  │  # none
+        # └──────────┴──────────┴───────┴────────┘
+
+        # use False if it was explicitly set to False
+        projects_remote = False if args.remote is False else True
+        projects_local = False if args.local is False else True
+
+        # handle if only --local or --remote is specified
+        if args.local and args.remote is None:
+            projects_remote = False
+        if args.remote and args.local is None:
+            projects_local = False
+
+        # iterate over all projects from manifest
         for project in self._cloned_projects(args, only_active=not args.all):
+            if project.is_local() and not projects_local:
+                continue
+            if not project.is_local() and not projects_remote:
+                continue
             if group_set and not group_set.intersection(set(project.groups)):
                 continue
 
             env["WEST_PROJECT_NAME"] = project.name
             env["WEST_PROJECT_PATH"] = project.path
             env["WEST_PROJECT_ABSPATH"] = project.abspath if project.abspath else ''
-            env["WEST_PROJECT_REVISION"] = project.revision
-            env["WEST_PROJECT_URL"] = project.url
+            env["WEST_PROJECT_REVISION"] = project.revision or 'N/A'
+            env["WEST_PROJECT_URL"] = project.url or 'N/A'
             env["WEST_PROJECT_REMOTE"] = project.remote_name
 
             cwd = args.cwd if args.cwd else project.abspath
@@ -2307,6 +2356,8 @@ class Grep(_ProjectCommand):
         command_list = [self.tool_path(tool, args)] + self.tool_args(tool, tool_cmdline_args)
         failed = []
         for project in self._cloned_projects(args, only_active=not args.projects):
+            if project.is_local():
+                continue
             completed_process = self.run_subprocess(
                 command_list, capture_output=True, text=True, cwd=project.abspath
             )
