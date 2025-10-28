@@ -589,6 +589,29 @@ def test_config_precedence():
     assert cfg(f=LOCAL)['pytest']['precedence'] == 'local'
 
 
+TEST_CASES_CONFIG_RELATIVE = [
+    # (flag, env_var)
+    ('--local', 'WEST_CONFIG_LOCAL'),
+    ('--system', 'WEST_CONFIG_SYSTEM'),
+    ('--global', 'WEST_CONFIG_GLOBAL'),
+]
+
+
+@pytest.mark.parametrize("test_case", TEST_CASES_CONFIG_RELATIVE)
+def test_config_relative_paths(test_case, config_tmpdir):
+    flag, env_var = test_case
+
+    # one relative config file path is specified
+    os.environ[env_var] = 'config1'
+    _, stderr = cmd_raises(f'config {flag} some.key', WestNotFound)
+    assert f"config file path(s) must be absolute: '{os.environ[env_var]}'" in stderr
+
+    # one of multiple config file paths is relative
+    os.environ[env_var] = f'config1{os.pathsep}config2'
+    _, stderr = cmd_raises(f'config {flag} some.key', WestNotFound)
+    assert f"config file path(s) must be absolute: '{os.environ[env_var]}'" in stderr
+
+
 def test_config_multiple(config_tmpdir):
     # Verify that local settings take precedence over global ones,
     # but that both values are still available, and that setting

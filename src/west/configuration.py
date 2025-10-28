@@ -74,6 +74,8 @@ class _InternalCF:
         paths = paths or []
         if not paths:
             return None
+        if not all(p.is_absolute() for p in paths):
+            raise WestNotFound(f"config file path(s) must be absolute: '{paths_to_str(paths)}'")
         paths = [p for p in paths if p.exists()]
         return _InternalCF(paths) if paths else None
 
