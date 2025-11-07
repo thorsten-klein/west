@@ -130,6 +130,19 @@ class _InternalCF:
             self.cp.write(f)
 
 
+class _Converter:
+    @staticmethod
+    def parse_paths(paths: str | None, sep: str = os.pathsep) -> list[Path]:
+        """Split a string into a list of Path objects using the given separator."""
+        paths = paths or ""
+        return [Path(p) for p in paths.split(sep) if p]
+
+    @staticmethod
+    def str_list_to_paths(paths: list[str]) -> list[Path]:
+        """Convert a list of path strings into a list of Path objects."""
+        return [Path(p) for p in paths]
+
+
 class ConfigFile(Enum):
     '''Types of west configuration file.
 
