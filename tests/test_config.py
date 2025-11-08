@@ -195,6 +195,50 @@ def test_config_list_paths():
                 assert 'topdir' in str(WNE)
 
 
+def test_config_list_search_paths_all():
+    WEST_CONFIG_SYSTEM = os.getenv('WEST_CONFIG_SYSTEM')
+    WEST_CONFIG_GLOBAL = os.getenv('WEST_CONFIG_GLOBAL')
+    WEST_CONFIG_LOCAL = os.getenv('WEST_CONFIG_LOCAL')
+
+    stdout = cmd('config --list-search-paths')
+    assert stdout.splitlines() == [WEST_CONFIG_SYSTEM, WEST_CONFIG_GLOBAL, WEST_CONFIG_LOCAL]
+
+    west_topdir = pathlib.Path('.')
+    env = {
+        'WEST_CONFIG_SYSTEM': None,
+        'WEST_CONFIG_GLOBAL': None,
+        'WEST_CONFIG_LOCAL': None,
+    }
+    with tmp_west_topdir(west_topdir):
+        with update_env(env):
+            stdout = cmd('config --list-search-paths')
+            search_paths = stdout.splitlines()
+            assert len(search_paths) == 3
+            local_path = (west_topdir / '.west' / 'config').resolve()
+            assert search_paths[2] == str(local_path)
+
+
+@pytest.mark.parametrize("location", [LOCAL, GLOBAL, SYSTEM])
+def test_config_list_search_paths(location):
+    flag = '' if location == ALL else west_flag[location]
+    env_var = west_env[location] if flag else None
+
+    west_topdir = pathlib.Path('.')
+    config1 = (west_topdir / 'some' / 'config 1').resolve()
+    config2 = pathlib.Path('relative') / 'c 2'
+    config2_abs = config2.resolve()
+    with tmp_west_topdir(west_topdir):
+        env = {env_var: f'{config1}{os.pathsep}{config2}'}
+        # env variable contains two config files
+        with update_env(env):
+            stdout = cmd(f'config {flag} --list-search-paths')
+            assert stdout.splitlines() == [str(config1), str(config2_abs)]
+        # if no env var is set it should list one default search path
+        with update_env({env_var: None}):
+            stdout = cmd(f'config {flag} --list-search-paths')
+            assert len(stdout.splitlines()) == 1
+
+
 def test_config_local():
     # test_config_system for local variables.
     cmd('config --local pytest.local foo')
