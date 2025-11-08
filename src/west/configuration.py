@@ -315,18 +315,7 @@ class Configuration:
         :param value: value to set option to
         :param configfile: type of config file to set the value in
         '''
-
-        def get_single_configfile(location: ConfigFile) -> Path:
-            '''
-            check that exactly one configfile is in use (even if it not exists yet)
-            and return its path.
-            '''
-            configs = self.get_search_paths(location)
-            if len(configs) > 1:
-                raise ValueError(f'Cannot set value if multiple configs in use: {configs}')
-            assert len(configs) == 1
-            return configs[0]
-
+        # raise in case of common errors
         if configfile == ConfigFile.ALL:
             # We need a real configuration file; ALL doesn't make sense here.
             raise ValueError(configfile)
@@ -335,29 +324,29 @@ class Configuration:
                 raise ValueError(
                     f'{configfile}: file not found; retry in a workspace or set WEST_CONFIG_LOCAL'
                 )
-            config_file = get_single_configfile(configfile)
-            if not config_file.exists():
-                self._local = self._create(config_file)
-            if TYPE_CHECKING:
-                assert self._local
-            self._local.set(option, value)
-        elif configfile == ConfigFile.GLOBAL:
-            config_file = get_single_configfile(configfile)
-            if not config_file.exists():
-                self._global = self._create(config_file)
-            if TYPE_CHECKING:
-                assert self._global
-            self._global.set(option, value)
-        elif configfile == ConfigFile.SYSTEM:
-            config_file = get_single_configfile(configfile)
-            if not config_file.exists():
-                self._system = self._create(config_file)
-            if TYPE_CHECKING:
-                assert self._system
-            self._system.set(option, value)
-        else:
-            # Shouldn't happen.
-            raise AssertionError(configfile)
+
+        # check that exactly one configfile is in use
+        configs = self.get_search_paths(configfile)
+        if len(configs) > 1:
+            raise ValueError(f'Cannot set value if multiple configs in use: {configs}')
+        assert len(configs) == 1, f'{configfile}: no config file in use'
+        config_path = configs[0]
+
+        # get internal attribute name (_local/_global/_system)
+        attr_mapping = {
+            ConfigFile.LOCAL: '_local',
+            ConfigFile.GLOBAL: '_global',
+            ConfigFile.SYSTEM: '_system',
+        }
+        attr = attr_mapping[configfile]
+
+        # create config if it does not already exist and use it
+        if not config_path.exists():
+            config = self._create(config_path)
+            setattr(self, attr, config)
+
+        # set value
+        getattr(self, attr).set(option, value)
 
     @staticmethod
     def _create(path: Path) -> _InternalCF:
