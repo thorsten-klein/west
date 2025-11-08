@@ -214,10 +214,10 @@ class Configuration:
 
     def get_search_paths(self, location: ConfigFile = ConfigFile.ALL) -> list[Path]:
         ret = []
-        if location in [ConfigFile.GLOBAL, ConfigFile.ALL]:
-            ret.extend(self._global_paths)
         if location in [ConfigFile.SYSTEM, ConfigFile.ALL]:
             ret.extend(self._system_paths)
+        if location in [ConfigFile.GLOBAL, ConfigFile.ALL]:
+            ret.extend(self._global_paths)
         if location in [ConfigFile.LOCAL, ConfigFile.ALL]:
             ret.extend(self._local_paths)
         return ret
