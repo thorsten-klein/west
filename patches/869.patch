@@ -1,0 +1,354 @@
+From 272c585f4901b75ea04796ef65feb06c34b2415b Mon Sep 17 00:00:00 2001
+From: "Klein, Thorsten" <Thorsten.Klein@bshg.com>
+Date: Thu, 16 Oct 2025 14:37:51 +0200
+Subject: [PATCH 1/2] manifest: support URL modification in downstream
+ manifests
+
+Add support for a new 'import-modifications' section in the manifest.
+
+Under the 'url-replace' key, users can define search-and-replace
+patterns that are applied to project URLs during manifest import.
+This allows downstream projects to modify remote URLs, e.g. when using
+mirrored repositories.
+---
+ src/west/manifest-schema.yml | 19 +++++++++++++++
+ src/west/manifest.py         | 46 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 65 insertions(+)
+
+diff --git a/src/west/manifest-schema.yml b/src/west/manifest-schema.yml
+index ebf82b53d..0b15c50c0 100644
+--- a/src/west/manifest-schema.yml
++++ b/src/west/manifest-schema.yml
+@@ -66,6 +66,25 @@ mapping:
+             required: true
+             type: str
+ 
++  # allow some modification of imported projects by downstream projects
++  import-modifications:
++    required: false
++    type: map
++    mapping:
++      # search-replace within URLs (e.g. to use mirror URLs)
++      url-replace:
++        required: false
++        type: seq
++        sequence:
++          - type: map
++            mapping:
++              old:
++                required: true
++                type: str
++              new:
++                required: true
++                type: str
++
+   # The "projects" key specifies a sequence of "projects", each of which has a
+   # remote, and may specify additional configuration.
+   #
+diff --git a/src/west/manifest.py b/src/west/manifest.py
+index 95afac72b..e753b32bc 100644
+--- a/src/west/manifest.py
++++ b/src/west/manifest.py
+@@ -7,6 +7,7 @@
+ Parser and abstract data types for west manifests.
+ '''
+ 
++import copy
+ import enum
+ import errno
+ import logging
+@@ -182,6 +183,34 @@ def _err(message):
+ _logger = logging.getLogger(__name__)
+ 
+ 
++# Representation of import-modifications
++
++
++class ImportModifications:
++    """Represents `import-modifications` within a manifest."""
++
++    def __init__(self, manifest_data: dict | None = None):
++        """Initialize a new ImportModifications instance."""
++        self.url_replaces: list[tuple[str, str]] = []
++        self.append(manifest_data or {})
++
++    def append(self, manifest_data: dict):
++        """Append values from a manifest data (dictionary) to this instance."""
++        for kind, values in manifest_data.get('import-modifications', {}).items():
++            if kind == 'url-replace':
++                self.url_replaces += [(v['old'], v['new']) for v in values]
++
++    def merge(self, other):
++        """Merge another ImportModifications instance into this one."""
++        if not isinstance(other, ImportModifications):
++            raise TypeError(f"Unsupported type'{type(other).__name__}'")
++        self.url_replaces += other.url_replaces
++
++    def copy(self):
++        """Return a deep copy of this instance."""
++        return copy.deepcopy(self)
++
++
+ # Type for the submodule value passed through the manifest file.
+ class Submodule(NamedTuple):
+     '''Represents a Git submodule within a project.'''
+@@ -456,6 +485,9 @@ class _import_ctx(NamedTuple):
+     # Bit vector of flags that modify import behavior.
+     import_flags: 'ImportFlag'
+ 
++    # import-modifications
++    modifications: ImportModifications
++
+ 
+ def _imap_filter_allows(imap_filter: ImapFilterFnType, project: 'Project') -> bool:
+     # imap_filter(project) if imap_filter is not None; True otherwise.
+@@ -2052,6 +2084,7 @@ def get_option(option, default=None):
+             current_repo_abspath=current_repo_abspath,
+             project_importer=project_importer,
+             import_flags=import_flags,
++            modifications=ImportModifications(),
+         )
+ 
+     def _recursive_init(self, ctx: _import_ctx):
+@@ -2074,6 +2107,10 @@ def _load_validated(self) -> None:
+ 
+         manifest_data = self._ctx.current_data['manifest']
+ 
++        # append values from resolved manifest_data to current context
++        new_modifications = ImportModifications(manifest_data)
++        self._ctx.modifications.merge(new_modifications)
++
+         schema_version = str(manifest_data.get('version', SCHEMA_VERSION))
+ 
+         # We want to make an ordered map from project names to
+@@ -2322,6 +2359,7 @@ def _import_pathobj_from_self(self, pathobj_abs: Path, pathobj: Path) -> None:
+             current_abspath=pathobj_abs,
+             current_relpath=pathobj,
+             current_data=pathobj_abs.read_text(encoding=Manifest.encoding),
++            modifications=self._ctx.modifications.copy(),
+         )
+         try:
+             Manifest(topdir=self.topdir, internal_import_ctx=child_ctx)
+@@ -2452,6 +2490,13 @@ def _load_project(self, pd: dict, url_bases: dict[str, str], defaults: _defaults
+         else:
+             self._malformed(f'project {name} has no remote or url and no default remote is set')
+ 
++        # modify the url
++        if url:
++            url_replaces = self._ctx.modifications.url_replaces
++            for url_replace in reversed(url_replaces):
++                old, new = url_replace
++                url = url.replace(old, new)
++
+         # The project's path needs to respect any import: path-prefix,
+         # regardless of self._ctx.import_flags. The 'ignore' type flags
+         # just mean ignore the imported data. The path-prefix in this
+@@ -2672,6 +2717,7 @@ def _import_data_from_project(
+             # We therefore use a separate list for tracking them
+             # from our current list.
+             manifest_west_commands=[],
++            modifications=self._ctx.modifications.copy(),
+         )
+         try:
+             submanifest = Manifest(topdir=self.topdir, internal_import_ctx=child_ctx)
+
+From bc81ddf8a97220b87a785b68d4ab71cca2adbf10 Mon Sep 17 00:00:00 2001
+From: Thorsten Klein <thorsten.klein@bshg.com>
+Date: Sun, 26 Oct 2025 17:00:27 +0100
+Subject: [PATCH 2/2] Added test for import-modifications
+
+Test that import-modifications feature works to override west project
+urls that directly specified in west manifest or imported via
+submanifests.
+---
+ tests/test_project.py | 177 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 177 insertions(+)
+
+diff --git a/tests/test_project.py b/tests/test_project.py
+index 58c3906a5..401158e22 100644
+--- a/tests/test_project.py
++++ b/tests/test_project.py
+@@ -121,6 +121,183 @@ def test_workspace(west_update_tmpdir):
+     assert wct.join('zephyr', 'subsys', 'bluetooth', 'code.c').check(file=1)
+ 
+ 
++def test_workspace_modify_url_replace(tmpdir, repos_tmpdir):
++    remotes_dir = repos_tmpdir / 'repos'
++    workspace_dir = tmpdir / 'workspace'
++    workspace_dir.mkdir()
++
++    # use remote zephyr
++    remote_zephyr = tmpdir / 'repos' / 'zephyr'
++
++    # create a local base project with a west.yml
++    project_base = remotes_dir / 'base'
++    create_repo(project_base)
++    add_commit(
++        project_base,
++        'manifest commit',
++        # zephyr revision is implicitly master:
++        files={
++            'west.yml': textwrap.dedent('''
++            manifest:
++              import-modifications:
++                url-replace:
++                - old: xxx
++                  new: yyy
++              remotes:
++                - name: upstream
++                  url-base: xxx
++              projects:
++              - name: zephyr
++                remote: upstream
++                path: zephyr-rtos
++                import: True
++              ''')
++        },
++    )
++
++    # create another project with another west.yml (stacked on base)
++    project_middle = remotes_dir / 'middle'
++    create_repo(project_middle)
++    add_commit(
++        project_middle,
++        'manifest commit',
++        # zephyr revision is implicitly master:
++        files={
++            'west.yml': f'''
++                      manifest:
++                        import-modifications:
++                          url-replace:
++                          - old: yyy
++                            new: zzz
++                        projects:
++                        - name: base
++                          url: {project_base}
++                          import: True
++                      '''
++        },
++    )
++
++    # create an app that uses middle project
++    project_app = workspace_dir / 'app'
++    project_app.mkdir()
++    with open(project_app / 'west.yml', 'w') as f:
++        f.write(
++            textwrap.dedent(f'''\
++            manifest:
++              import-modifications:
++                url-replace:
++                  - old: zzz
++                    new: {os.path.dirname(remote_zephyr)}
++              projects:
++                - name: middle
++                  url: {project_middle}
++                  import: True
++        ''')
++        )
++
++    # init workspace in projects_dir (project_app's parent)
++    cmd(['init', '-l', project_app])
++
++    # update workspace in projects_dir
++    cmd('update', cwd=workspace_dir)
++
++    # zephyr projects from base are cloned
++    for project_subdir in [
++        Path('subdir') / 'Kconfiglib',
++        'tagged_repo',
++        'net-tools',
++        'zephyr-rtos',
++    ]:
++        assert (workspace_dir / project_subdir).check(dir=1)
++        assert (workspace_dir / project_subdir / '.git').check(dir=1)
++
++
++def test_workspace_modify_url_replace_with_self_import(repos_tmpdir):
++    remote_zephyr = repos_tmpdir / 'repos' / 'zephyr'
++    projects_dir = repos_tmpdir / 'projects'
++    projects_dir.mkdir()
++
++    # create a local base project with a west.yml
++    project_base = projects_dir / 'base'
++    project_base.mkdir()
++    with open(project_base / 'west.yml', 'w') as f:
++        f.write(
++            textwrap.dedent('''\
++            manifest:
++              remotes:
++                - name: upstream
++                  url-base: nonexistent
++              projects:
++              - name: zephyr
++                remote: upstream
++                path: zephyr-rtos
++                import: True
++        ''')
++        )
++
++    # create another project with another west.yml (stacked on base)
++    project_middle = projects_dir / 'middle'
++    project_middle.mkdir()
++    with open(project_middle / 'west.yml', 'w') as f:
++        f.write(
++            textwrap.dedent('''\
++            manifest:
++              self:
++                import: ../base
++        ''')
++        )
++
++    # create another project with another west.yml (stacked on base)
++    project_another = projects_dir / 'another'
++    project_another.mkdir()
++    with open(project_another / 'west.yml', 'w') as f:
++        f.write(
++            textwrap.dedent('''\
++            manifest:
++              # this should not have any effect since there are no imports
++              import-modifications:
++                url-replace:
++                  - old: nonexistent
++                    new: from-another
++        ''')
++        )
++
++    # create another project with another west.yml (stacked on base)
++    project_app = projects_dir / 'app'
++    project_app.mkdir()
++    with open(project_app / 'west.yml', 'w') as f:
++        f.write(
++            textwrap.dedent(f'''\
++            manifest:
++              import-modifications:
++                url-replace:
++                  - old: nonexistent
++                    new: {os.path.dirname(remote_zephyr)}
++              self:
++                import:
++                - ../another
++                - ../middle
++        ''')
++        )
++
++    # init workspace in projects_dir (project_app's parent)
++    cmd(['init', '-l', project_app])
++
++    # update workspace in projects_dir
++    cmd('update', cwd=projects_dir)
++
++    ws = projects_dir
++    # zephyr projects from base are cloned
++    for project_subdir in [
++        Path('subdir') / 'Kconfiglib',
++        'tagged_repo',
++        'net-tools',
++        'zephyr-rtos',
++    ]:
++        assert (ws / project_subdir).check(dir=1)
++        assert (ws / project_subdir / '.git').check(dir=1)
++
++
+ def test_list(west_update_tmpdir):
+     # Projects shall be listed in the order they appear in the manifest.
+     # Check the behavior for some format arguments of interest as well.
