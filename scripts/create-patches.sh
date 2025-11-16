@@ -11,4 +11,6 @@ REMOTE_BRANCH="main"
 mkdir -p "$PATCH_DIR"
 git format-patch "$REMOTE_NAME/$REMOTE_BRANCH" -o "$PATCH_DIR"
 
+git add "$PATCH_DIR"
+
 echo "Done!"
