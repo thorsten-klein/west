@@ -1738,6 +1738,39 @@ class Update(_ProjectCommand):
         with open(cache_dir + '.info', 'w') as f:
             f.write(content)
 
+    def update_auto_cache_head(self, project):
+        """Set HEAD to remote HEAD within auto-cache of the project."""
+        auto_cache_dir = self.project_auto_cache(project)
+        if not auto_cache_dir or not Path(auto_cache_dir).exists():
+            return
+
+        # Try to determine the remote HEAD via git.
+        cp = project.git(
+            ['ls-remote', '--symref', project.url, 'HEAD'],
+            cwd=auto_cache_dir,
+            capture_stdout=True,
+            capture_stderr=True,
+            check=False,
+        )
+        if cp.returncode != 0:
+            return
+
+        # Extract the remote HEAD accordingly, e.g. 'refs/heads/main'
+        # from stdout "ref: refs/heads/main HEAD".
+        # A valid symbolic remote HEAD should always starts with 'refs/'.
+        stdout_parts = cp.stdout.decode('utf-8').split()
+        remote_head = stdout_parts[1] if len(stdout_parts) >= 2 else ''
+        if not remote_head.startswith('refs/'):
+            return
+
+        # set HEAD to remote HEAD
+        project.git(
+            ['symbolic-ref', 'HEAD', remote_head],
+            cwd=auto_cache_dir,
+            capture_stdout=True,
+            check=False,
+        )
+
     def handle_auto_cache(self, project):
         # update() helper. Initialize the specified cache directory if it has
         # not been cloned yet. If the cache directory is already existing, it
@@ -1782,6 +1815,11 @@ class Update(_ProjectCommand):
             # The auto-cache needs to be updated. Sync with remote.
             self.dbg(f'{project.name}: update auto-cache ({cache_dir}) with remote')
             project.git(['remote', 'update', '--prune'], cwd=cache_dir, check=False)
+
+            # Always make sure that the auto-cache HEAD points to correct
+            # remote HEAD to avoid issues when cloning from the
+            # auto-cache, e.g. if the default branch has been changed in remote.
+            self.update_auto_cache_head(project)
 
     def init_project(self, project):
         # update() helper. Initialize an uncloned project repository.
