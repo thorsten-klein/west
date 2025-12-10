@@ -408,6 +408,31 @@ def test_update_auto_cache_skipped_remote_update(tmpdir):
     for msg in msgs:
         assert msg in stdout
 
+    # Rename remote default branch (resulting in dangling remote HEAD).
+    # The auto-cache is corrupt now and cannot be cloned.
+    with chdir(foo_remote):
+        subprocess.check_call([GIT, 'branch', '-m', 'master', 'renamed-master'])
+    with chdir(bar_remote):
+        subprocess.check_call([GIT, 'branch', '-m', 'master', 'changed/main'])
+    with chdir(auto_cache_dir_foo):
+        subprocess.check_call([GIT, 'remote', 'update', '--prune'])
+    with chdir(auto_cache_dir_bar):
+        subprocess.check_call([GIT, 'remote', 'update', '--prune'])
+    msg = "warning: remote HEAD refers to nonexistent ref, unable to checkout."
+    cp = subprocess.run([GIT, 'clone', auto_cache_dir_foo], check=True, stderr=subprocess.PIPE)
+    assert msg in cp.stderr.decode()
+    cp = subprocess.run([GIT, 'clone', auto_cache_dir_bar], check=True, stderr=subprocess.PIPE)
+    assert msg in cp.stderr.decode()
+
+    # auto-cache HEAD is set to remote HEAD during update, so west update must succeed
+    setup_workspace_and_west_update(
+        tmpdir / 'workspace5',
+        foo_head='renamed-master',
+        bar_head='changed/main',
+    )
+    with chdir(tmpdir / 'workspace5'):
+        cmd(['-v', 'update', '--auto-cache', auto_cache_dir])
+
 
 def test_update_caches_priorities(tmpdir):
     # Test that the correct cache is used if multiple caches are specified
