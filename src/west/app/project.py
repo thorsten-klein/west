@@ -1821,11 +1821,8 @@ class Update(_ProjectCommand):
             )
             # Reset the remote's URL to the project's fetch URL.
             project.git(['remote', 'set-url', project.remote_name, project.url])
-            # Make sure a valid revision is checked out
+            # Make sure the requested revision is checked out.
             project.git(['checkout', '--quiet', project.revision])
-            # Make sure we have a detached HEAD so we can delete the
-            # local branch created by git clone.
-            project.git('checkout --quiet --detach HEAD')
             # Find the name of any local branch created by git clone.
             # West commits to only touching 'manifest-rev' in the
             # local branch name space.
