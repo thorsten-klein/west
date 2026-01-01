@@ -5,7 +5,7 @@
 import textwrap
 
 from conftest import add_commit, cmd, cmd_raises
-
+from pathlib import Path
 
 def test_extension_commands_basic(west_update_tmpdir):
     # Test basic extension command loading and structure
@@ -259,3 +259,44 @@ def test_extension_command_multiple_commands_same_file(west_update_tmpdir):
     assert 'first command' in ext_output
     ext_output = cmd('second')
     assert 'second command' in ext_output
+
+DEFAULT_YML = textwrap.dedent('''\
+    west-commands:
+      - file: scripts/{command}.py
+        commands:
+          - name: {command}
+            help: {command} help
+''')
+
+DEFAULT_PY = textwrap.dedent('''\
+    from west.commands import WestCommand
+    class {command}(WestCommand):
+        def __init__(self):
+            super().__init__('{command}', 'help text', 'description')
+        def do_add_parser(self, parser_adder):
+            return parser_adder.add_parser(self.name)
+        def do_run(self, args, unknown):
+            print('{command} is run')
+''')
+
+
+def test_extension_command_config(west_update_tmpdir):
+    # Test that class name defaults to command name if not specified
+    west_commands_system1 = Path('system-1.yml')
+    west_commands_system2 = Path('system-2.yml')
+    west_commands_global1 = Path('global-1.yml')
+    west_commands_global2 = Path('global-2.yml')
+    west_commands_system1.write_text(DEFAULT_YML.format(command='foo'))
+    west_commands_system2.write_text(DEFAULT_YML.format(command='bar'))
+    west_commands_global1.write_text(DEFAULT_YML.format(command='hug'))
+    west_commands_global2.write_text(DEFAULT_YML.format(command='zoo'))
+    for ext in ['foo', 'bar', 'hug', 'zoo']:
+        f = Path('scripts') / f'{ext}.py'
+        f.parent.mkdir(exist_ok=True)
+        f.write_text(DEFAULT_PY.format(command=ext))
+
+    cmd(f'config --global commands.extensions ;{west_commands_global1};;{west_commands_global2}')
+    cmd(f'config --system commands.extensions ;{west_commands_system1};;{west_commands_system2}')
+    for ext in ['foo', 'bar', 'hug', 'zoo']:
+        ext_output = cmd(ext)
+        assert f'{ext} is run' in ext_output

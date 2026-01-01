@@ -31,7 +31,7 @@ except ImportError:
 
 import yaml
 
-from west.configuration import Configuration
+from west.configuration import ConfigFile, Configuration
 from west.manifest import Manifest, Project
 from west.util import PathType, escapes_directory, quote_sh_list
 
@@ -640,13 +640,24 @@ def extension_commands(config: Configuration, manifest: Manifest | None = None):
         manifest = Manifest.from_file()
 
     specs = OrderedDict()
+
     for project in manifest.projects:
         if project.west_commands:
             specs[project.path] = _ext_specs(project)
+
+    for configfile in [ConfigFile.SYSTEM, ConfigFile.GLOBAL, ConfigFile.LOCAL]:
+        specs_config = config.get('commands.extensions', default='', configfile=configfile)
+        if not specs_config:
+            continue
+        project = argparse.Namespace
+        project.west_commands = [ext for ext in specs_config.split(';') if ext]
+        project.abspath = manifest.topdir
+        specs[configfile] = _ext_specs(project, allow_escapes_directory=True, must_exist=True)
+
     return specs
 
 
-def _ext_specs(project):
+def _ext_specs(project, allow_escapes_directory=False, must_exist=False):
     # Get a list of WestExtCommandSpec objects for the given
     # west.manifest.Project.
 
@@ -658,15 +669,23 @@ def _ext_specs(project):
         # Verify project.west_commands isn't trying a directory traversal
         # outside of the project.
         if escapes_directory(spec_file, project.abspath):
-            raise ExtensionCommandError(
-                hint=f'west-commands file {cmd} escapes project path {project.path}'
-            )
+            if allow_escapes_directory:
+                continue
+            else:
+                raise ExtensionCommandError(
+                    hint=f'west-commands file {cmd} escapes project path {project.path}'
+                )
 
         # The project may not be cloned yet, or this might be coming
         # from a manifest that was copy/pasted into a self import
         # location.
         if not os.path.exists(spec_file):
-            continue
+            if not must_exist:
+                continue
+            else:
+                raise ExtensionCommandError(
+                    hint=f'west-commands file {spec_file} does not exist'
+                )
 
         # Load the spec file and check the schema.
         with open(spec_file) as f:
@@ -682,11 +701,11 @@ def _ext_specs(project):
             raise ExtensionCommandError from e
 
         for commands_desc in commands_spec['west-commands']:
-            ret.extend(_ext_specs_from_desc(project, commands_desc))
+            ret.extend(_ext_specs_from_desc(project, commands_desc, allow_escapes_directory=allow_escapes_directory))
     return ret
 
 
-def _ext_specs_from_desc(project, commands_desc):
+def _ext_specs_from_desc(project, commands_desc, allow_escapes_directory=False):
     py_file = os.path.join(project.abspath, commands_desc['file'])
 
     # Verify the YAML's python file doesn't escape the project directory.
