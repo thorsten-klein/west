@@ -649,31 +649,29 @@ def extension_commands(config: Configuration, manifest: Manifest | None = None):
         specs_config = config.get('commands.extensions', default='', configfile=configfile)
         if not specs_config:
             continue
-        project = argparse.Namespace
-        project.west_commands = [ext for ext in specs_config.split(';') if ext]
-        project.abspath = manifest.topdir
-        specs[configfile] = _ext_specs(project, allow_escapes_directory=True, must_exist=True)
+        west_commands = [ext for ext in specs_config.split(';') if ext]
+        specs[configfile] = _ext_specs(None, west_commands=west_commands, abspath=manifest.topdir, allow_escapes_directory=True, must_exist=True)
 
     return specs
 
 
-def _ext_specs(project, allow_escapes_directory=False, must_exist=False):
+def _ext_specs(project, west_commands=None, abspath=None, allow_escapes_directory=False, must_exist=False):
     # Get a list of WestExtCommandSpec objects for the given
     # west.manifest.Project.
-
+    west_commands = west_commands or getattr(project, 'west_commands', [])
+    abspath = abspath or getattr(project, 'abspath', '.')
     ret = []
+    for cmd in west_commands:
+        spec_file = os.path.join(abspath, cmd)
 
-    for cmd in project.west_commands:
-        spec_file = os.path.join(project.abspath, cmd)
-
-        # Verify project.west_commands isn't trying a directory traversal
+        # Verify west_commands isn't trying a directory traversal
         # outside of the project.
-        if escapes_directory(spec_file, project.abspath):
+        if escapes_directory(spec_file, abspath):
             if allow_escapes_directory:
                 continue
             else:
                 raise ExtensionCommandError(
-                    hint=f'west-commands file {cmd} escapes project path {project.path}'
+                    hint=f'west-commands file {cmd} escapes project path {abspath}'
                 )
 
         # The project may not be cloned yet, or this might be coming
@@ -705,14 +703,15 @@ def _ext_specs(project, allow_escapes_directory=False, must_exist=False):
     return ret
 
 
-def _ext_specs_from_desc(project, commands_desc, allow_escapes_directory=False):
-    py_file = os.path.join(project.abspath, commands_desc['file'])
+def _ext_specs_from_desc(project, commands_desc, abspath=None, allow_escapes_directory=False):
+    abspath = abspath or getattr(project, 'abspath', '.')
+    py_file = os.path.join(abspath, commands_desc['file'])
 
     # Verify the YAML's python file doesn't escape the project directory.
-    if escapes_directory(py_file, project.abspath):
+    if escapes_directory(py_file, abspath):
         raise ExtensionCommandError(
             hint=f'extension command python file "{commands_desc["file"]}" '
-            f'escapes project path {project.path}'
+            f'escapes project path {abspath}'
         )
 
     # Create the command thunks.
