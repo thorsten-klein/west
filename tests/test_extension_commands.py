@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import textwrap
+from pathlib import Path
 
-from conftest import add_commit, cmd, cmd_raises
+from conftest import add_commit, chdir, cmd, cmd_raises
 
 
 def test_extension_commands_basic(west_update_tmpdir):
@@ -259,3 +260,76 @@ def test_extension_command_multiple_commands_same_file(west_update_tmpdir):
     assert 'first command' in ext_output
     ext_output = cmd('second')
     assert 'second command' in ext_output
+
+
+DEFAULT_YML = textwrap.dedent('''\
+    west-commands:
+      - file: scripts/{command}.py
+        commands:
+          - name: {command}
+            help: {help}
+''')
+
+DEFAULT_PY = textwrap.dedent('''\
+    from west.commands import WestCommand
+    class {command}(WestCommand):
+        def __init__(self):
+            super().__init__('{command}', 'help text', 'description')
+        def do_add_parser(self, parser_adder):
+            return parser_adder.add_parser(self.name)
+        def do_run(self, args, unknown):
+            print('{msg}')
+''')
+
+
+def test_extension_command_config(west_update_tmpdir):
+    configs_dir = Path(west_update_tmpdir).parent / 'configs'
+    configs_dir.mkdir()
+
+    with chdir(configs_dir):
+        # Test that class name defaults to command name if not specified
+        west_commands_system1 = configs_dir / 'system-1.yml'
+        west_commands_system2 = configs_dir / 'system-2.yml'
+        west_commands_global1 = configs_dir / 'global-1.yml'
+        west_commands_global2 = configs_dir / 'global-2.yml'
+        west_commands_system1.write_text(DEFAULT_YML.format(command='foo', help='foo help'))
+        west_commands_system2.write_text(DEFAULT_YML.format(command='bar', help='bar help'))
+        west_commands_global1.write_text(DEFAULT_YML.format(command='hug', help='hug help'))
+        west_commands_global2.write_text(DEFAULT_YML.format(command='zoo', help='zoo help'))
+        for ext in ['foo', 'bar', 'hug', 'zoo']:
+            f = configs_dir / 'scripts' / f'{ext}.py'
+            f.parent.mkdir(exist_ok=True)
+            f.write_text(DEFAULT_PY.format(command=ext, msg=f'{ext} is run'))
+
+    cmd(f'config --global commands.extensions ;{west_commands_global1};;{west_commands_global2}')
+    cmd(f'config --system commands.extensions ;{west_commands_system1};;{west_commands_system2}')
+    for ext in ['foo', 'bar', 'hug', 'zoo']:
+        ext_output = cmd(ext)
+        assert f'{ext} is run' in ext_output
+
+
+def test_extension_command_config_priority(west_update_tmpdir):
+    config_dir_system = Path(west_update_tmpdir).parent / 'x'
+    config_dir_global = Path(west_update_tmpdir).parent / 'y'
+    (config_dir_system / 'scripts').mkdir(parents=True)
+    (config_dir_global / 'scripts').mkdir(parents=True)
+
+    # Test that class name defaults to command name if not specified
+    west_commands_system = config_dir_system / 'west-commands.yml'
+    west_commands_global = config_dir_global / 'west-commands.yml'
+    west_commands_system.write_text(DEFAULT_YML.format(command='foo', help='foo from system'))
+    west_commands_global.write_text(DEFAULT_YML.format(command='foo', help='foo from global'))
+    py_system = config_dir_system / 'scripts' / 'foo.py'
+    py_system.write_text(DEFAULT_PY.format(command='foo', msg='foo from system'))
+    py_global = config_dir_global / 'scripts' / 'foo.py'
+    py_global.write_text(DEFAULT_PY.format(command='foo', msg='foo from global'))
+
+    cmd(f'config --global commands.extensions {west_commands_global}')
+    cmd(f'config --system commands.extensions {west_commands_system}')
+    stdout = cmd('foo')
+    assert 'foo from global' in stdout
+    stdout = cmd('foo --help')
+    assert 'usage: west foo' in stdout
+    stdout = cmd('--help')
+    print(stdout)
+    assert 'foo from global' in stdout
