@@ -31,7 +31,7 @@ except ImportError:
 
 import yaml
 
-from west.configuration import Configuration
+from west.configuration import ConfigFile, Configuration
 from west.manifest import Manifest, Project
 from west.util import PathType, escapes_directory, quote_sh_list
 
@@ -567,7 +567,7 @@ class WestCommand(ABC):
 
 @dataclass
 class _ExtFactory:
-    py_file: str
+    py_file: Path
     name: str
     attr: str
 
@@ -605,7 +605,7 @@ class WestExtCommandSpec:
     name: str
 
     # Project instance which defined the command
-    project: Project
+    project: Project | None
 
     # Help string in west-commands.yml, or a default value
     help: str
@@ -640,62 +640,62 @@ def extension_commands(config: Configuration, manifest: Manifest | None = None):
         manifest = Manifest.from_file()
 
     specs = OrderedDict()
+
     for project in manifest.projects:
         if project.west_commands:
-            specs[project.path] = _ext_specs(project)
+            specs[project.path] = _project_ext_specs(project)
+
+    for configfile in [ConfigFile.LOCAL, ConfigFile.GLOBAL, ConfigFile.SYSTEM]:
+        specs_config = config.get('commands.extensions', default='', configfile=configfile)
+        if not specs_config:
+            continue
+        ext_ymls = [ext for ext in specs_config.split(';') if ext]
+        specs[str(configfile)] = _ext_specs_from_ymls(ext_ymls)
+
     return specs
 
 
-def _ext_specs(project):
-    # Get a list of WestExtCommandSpec objects for the given
-    # west.manifest.Project.
-
-    ret = []
-
-    for cmd in project.west_commands:
-        spec_file = os.path.join(project.abspath, cmd)
-
-        # Verify project.west_commands isn't trying a directory traversal
-        # outside of the project.
-        if escapes_directory(spec_file, project.abspath):
-            raise ExtensionCommandError(
-                hint=f'west-commands file {cmd} escapes project path {project.path}'
-            )
-
-        # The project may not be cloned yet, or this might be coming
-        # from a manifest that was copy/pasted into a self import
-        # location.
-        if not os.path.exists(spec_file):
-            continue
-
-        # Load the spec file and check the schema.
-        with open(spec_file) as f:
-            try:
-                commands_spec = yaml.load(f.read(), Loader=SafeLoader)
-            except yaml.YAMLError as e:
-                raise ExtensionCommandError from e
+def _load_ext_commands_spec(spec_file: Path):
+    # Load the spec file and check the schema.
+    # Return the loaded yaml if it succeeds. Otherwise raise ExtensionCommandError.
+    commands_spec = None
+    if not spec_file.exists():
+        raise ExtensionCommandError(hint=f'west-commands file {spec_file} does not exist')
+    with open(spec_file) as f:
         try:
-            pykwalify.core.Core(
-                source_data=commands_spec, schema_files=[_EXT_SCHEMA_PATH]
-            ).validate()
-        except pykwalify.errors.SchemaError as e:
+            commands_spec = yaml.load(f.read(), Loader=SafeLoader)
+        except yaml.YAMLError as e:
             raise ExtensionCommandError from e
+    try:
+        pykwalify.core.Core(source_data=commands_spec, schema_files=[_EXT_SCHEMA_PATH]).validate()
+    except pykwalify.errors.SchemaError as e:
+        raise ExtensionCommandError from e
+    return commands_spec
 
+
+def _ext_specs_from_ymls(ext_ymls: list[str]):
+    # Return a list of all WestExtCommandSpec objects from given west-commands.yml files.
+    ret = []
+    for ext_yml in ext_ymls:
+        spec_file = Path(ext_yml)
+        commands_spec = _load_ext_commands_spec(spec_file)
         for commands_desc in commands_spec['west-commands']:
-            ret.extend(_ext_specs_from_desc(project, commands_desc))
+            ret.extend(_ext_specs_from_desc(commands_desc, basedir=spec_file.parent, project=None))
     return ret
 
 
-def _ext_specs_from_desc(project, commands_desc):
-    py_file = os.path.join(project.abspath, commands_desc['file'])
+def _ext_specs_from_desc(commands_desc, basedir: Path, project: Project | None):
+    # Return a list of all WestExtCommandSpec objects from given commands_desc.
+    py_file = Path(commands_desc['file'])
+    if not py_file.is_absolute():
+        py_file = Path(basedir) / py_file
 
     # Verify the YAML's python file doesn't escape the project directory.
-    if escapes_directory(py_file, project.abspath):
+    if escapes_directory(py_file, basedir):
         raise ExtensionCommandError(
             hint=f'extension command python file "{commands_desc["file"]}" '
-            f'escapes project path {project.path}'
+            f'escapes project path {basedir}'
         )
-
     # Create the command thunks.
     thunks = []
     for command_desc in commands_desc['commands']:
@@ -707,6 +707,34 @@ def _ext_specs_from_desc(project, commands_desc):
 
     # Return the thunks for this project.
     return thunks
+
+
+def _project_ext_specs(project):
+    # Return a list of WestExtCommandSpec objects for the given west.manifest.Project.
+    ret = []
+    for cmd in project.west_commands:
+        spec_file = Path(project.abspath) / cmd
+
+        # Verify west_commands isn't trying a directory traversal
+        # outside of the project.
+        if escapes_directory(spec_file, project.abspath):
+            raise ExtensionCommandError(
+                hint=f'west-commands file {cmd} escapes project path {project.path}'
+            )
+
+        # The project may not be cloned yet, or this might be coming
+        # from a manifest that was copy/pasted into a self import
+        # location.
+        if not spec_file.exists():
+            continue
+
+        # Load the spec file and check the schema.
+        commands_spec = _load_ext_commands_spec(spec_file)
+        for commands_desc in commands_spec['west-commands']:
+            ret.extend(
+                _ext_specs_from_desc(commands_desc, basedir=project.abspath, project=project)
+            )
+    return ret
 
 
 def _commands_module_from_file(file):

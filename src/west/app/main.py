@@ -425,24 +425,30 @@ class WestApp:
             # Filter out attempts to shadow built-in commands as well as
             # command names which are already used.
 
+            def wrn_ignored_ext(cmd, spec_const, msg):
+                if spec_const.project:
+                    cmd.wrn(
+                        f'ignoring project {spec_const.project.name} '
+                        f'extension command "{spec_const.name}"; {msg}'
+                    )
+                else:
+                    cmd.wrn(f'ignoring extension command "{spec_const.name}"; {msg} ')
+
             filtered = []
             for spec in specs:
                 if spec.name in self.builtins:
                     self.queued_io.append(
-                        lambda cmd, spec_const=spec: cmd.wrn(
-                            f'ignoring project {spec_const.project.name} '
-                            f'extension command "{spec_const.name}"; '
-                            'this is a built in command'
+                        lambda cmd, spec_const=spec: wrn_ignored_ext(
+                            cmd, spec_const, 'this is a built in command'
                         )
                     )
                     continue
                 if spec.name in extension_names:
                     self.queued_io.append(
-                        lambda cmd, spec_const=spec: cmd.wrn(
-                            f'ignoring project {spec_const.project.name} '
-                            f'extension command "{spec_const.name}"; '
-                            f'command "{spec_const.name}" is '
-                            'already defined as extension command'
+                        lambda cmd, spec_const=spec: wrn_ignored_ext(
+                            cmd,
+                            spec_const,
+                            f'command "{spec_const.name}" is already defined as extension command',
                         )
                     )
                     continue
@@ -1086,10 +1092,12 @@ class WestArgumentParser(argparse.ArgumentParser):
                         continue
 
                     project = specs[0].project  # they're all from this project
-                    append(
-                        f'extension commands from project {project.name} (path: {project.path}):'
-                    )
-
+                    if not project:
+                        append(f'extension commands from {_path}:')
+                    else:
+                        append(
+                            f'extension commands from project {project.name} (path: {project.path}):'
+                        )
                     for spec in specs:
                         self.format_extension_spec(append, spec, width)
                     append('')
