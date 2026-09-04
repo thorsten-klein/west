@@ -26,6 +26,7 @@ from west.commands import CommandError, Verbosity, WestCommand
 from west.configuration import Configuration
 from west.manifest import (
     _WEST_YML,
+    ExternalProject,
     ImportFlag,
     Manifest,
     ManifestImportFailed,
@@ -132,6 +133,9 @@ class _ProjectCommand(WestCommand):
         # Does not catch subprocess.CalledProcessError; callers decide
         # whether such failures are fatal.
         def sha_thunk(project):
+            if isinstance(project, ExternalProject):
+                return f'{"N/A":40}'
+
             self.die_if_no_git()
 
             if not project.is_cloned():
@@ -145,6 +149,9 @@ class _ProjectCommand(WestCommand):
                 return project.sha(MANIFEST_REV)
 
         def cloned_thunk(project):
+            if isinstance(project, ExternalProject):
+                return "external"
+
             self.die_if_no_git()
 
             return "cloned" if project.is_cloned() else "not-cloned"
@@ -189,7 +196,11 @@ class _ProjectCommand(WestCommand):
                 path=path,
                 abspath=apath,
                 posixpath=ppath,
-                revision=project.revision or 'N/A',
+                revision=(
+                    'external'
+                    if isinstance(project, ExternalProject)
+                    else project.revision or 'N/A'
+                ),
                 clone_depth=project.clone_depth or "None",
                 cloned=delay(cloned_thunk, project),
                 active=delay(active_thunk, project),
@@ -703,6 +714,9 @@ class List(_ProjectCommand):
 
 Note: To list only inactive projects you can use --inactive.
 
+External projects (from "external-projects:" in the manifest) are
+listed after the projects. West does not clone or update them.
+
 FORMAT STRINGS
 --------------
 
@@ -723,11 +737,12 @@ The following arguments are available:
 - abspath: absolute and normalized path to the project
 - posixpath: like abspath, but in posix style, that is, with '/'
   as the separator character instead of '\\'
-- revision: project's revision as it appears in the manifest
+- revision: project's revision as it appears in the manifest,
+  "external" for an external project
 - sha: project's revision as a SHA. Note that use of this requires
   that the project has been cloned.
 - cloned: "cloned" if the project has been cloned, "not-cloned"
-  otherwise
+  otherwise, "external" for an external project
 - active: "active" if the project is currently active, "inactive" otherwise
 - clone_depth: project clone depth if specified, "None" otherwise
 - groups: project groups, as a comma-separated list
@@ -768,7 +783,11 @@ The following arguments are available:
         if args.inactive and args.projects:
             self.parser.error('-i cannot be combined with an explicit project list')
 
-        for project in self._projects(args.projects):
+        projects = self._projects(args.projects)
+        if not args.projects:
+            projects = [*projects, *self.manifest.external_projects]
+
+        for project in projects:
             # Include the project based on the inactive flag. If the flag is
             # set, include only inactive projects. Otherwise, include only
             # active ones.

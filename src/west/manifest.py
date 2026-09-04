@@ -59,7 +59,7 @@ QUAL_REFS_WEST = 'refs/west/'
 #: v1.0.x, so that users can say "I want schema version 1" instead of
 #: having to keep using '0.13', which was the previous version this
 #: changed.)
-SCHEMA_VERSION = '1.2'
+SCHEMA_VERSION = '1.3'
 # MAINTAINERS:
 #
 # - Make sure to update _VALID_SCHEMA_VERS if you change this.
@@ -216,6 +216,7 @@ _VALID_SCHEMA_VERS = [
     '0.12',
     '0.13',
     '1.0',
+    '1.2',
     SCHEMA_VERSION,
 ]
 
@@ -397,6 +398,9 @@ class _import_ctx(NamedTuple):
     # contains a name which is already present here, we ignore that
     # element.
     projects: dict[str, 'Project']
+
+    # Like 'projects', for 'manifest: external-projects:'.
+    external_projects: dict[str, 'ExternalProject']
 
     # The project filters we should apply while resolving imports. We
     # try to load this only once from the 'manifest.project-filter'
@@ -1186,6 +1190,33 @@ class Project:
         return [f.decode(encoding).split('\t', 1)[1] for f in out.split(b'\x00') if f]
 
 
+class ExternalProject(Project):
+    '''A project from ``external-projects:`` in the manifest.
+
+    West does not clone or update it, and it is not in
+    `Manifest.projects`. West reads its ``west-commands:`` and
+    ``import:`` from its folder, not from git.
+
+    In the manifest, ``path:`` is relative to the manifest file's
+    folder. Here, ``path`` is relative to topdir, like `Project.path`.
+    '''
+
+    def __repr__(self):
+        return f'ExternalProject("{self.name}", path={self.path!r}, topdir={self.topdir!r})'
+
+    def __str__(self):
+        return f'<ExternalProject {self.name} ({self.abspath or self.path!r})>'
+
+    def as_dict(self) -> dict:
+        '''Like `Project.as_dict`, with only the keys of an external project.'''
+        ret = {k: v for k, v in super().as_dict().items() if k in _EXTERNAL_PROJECT_KEYS}
+        ret['path'] = self.path
+        return ret
+
+
+_EXTERNAL_PROJECT_KEYS = ('name', 'description', 'west-commands', 'groups', 'userdata')
+
+
 # FIXME: this whole class should just go away. See #327.
 class ManifestProject(Project):
     '''Represents the manifest repository as a `Project`.
@@ -1568,6 +1599,8 @@ class Manifest:
 
         # This backs the projects() property.
         self._projects: list[Project] = []
+        # This backs the external_projects() property.
+        self._external_projects: dict[str, ExternalProject] = {}
         # The final set of groups which are explicitly disabled in
         # this manifest data, after resolving imports. This is used
         # as an optimization in is_active().
@@ -1670,7 +1703,7 @@ class Manifest:
             project: Project | None = None
 
             if isinstance(pid, str):
-                project = self._projects_by_name.get(pid)
+                project = self._projects_by_name.get(pid) or self._external_projects.get(pid)
 
             if project is None and allow_paths:
                 project = self._projects_by_rpath.get(Path(pid).resolve())
@@ -1825,6 +1858,12 @@ class Manifest:
         (or resolution order if the manifest contains imports).
         '''
         return self._projects
+
+    @property
+    def external_projects(self) -> list[ExternalProject]:
+        '''The `ExternalProject` objects of the manifest. They are not in
+        `projects`. `get_projects` finds them by name.'''
+        return list(self._external_projects.values())
 
     def is_active(self, project: Project, extra_filter: Iterable[str] | None = None) -> bool:
         '''Is a project active?
@@ -2059,6 +2098,7 @@ class Manifest:
 
         return _import_ctx(
             projects={},
+            external_projects={},
             project_filter=project_filter,
             group_filter_q=deque(),
             manifest_west_commands=[],
@@ -2113,7 +2153,13 @@ class Manifest:
         # projects and group-filter values.
         url_bases = {r['name']: r['url-base'] for r in manifest_data.get('remotes', [])}
         defaults = self._load_defaults(manifest_data.get('defaults', {}), url_bases)
+        # Projects and external projects share their names; the first
+        # definition wins. Add the external projects first, so they win
+        # over projects from the imports of this manifest's projects.
+        external_imports = self._load_external_projects(manifest_data)
         self._load_projects(manifest_data, url_bases, defaults)
+        for project, imp in external_imports:
+            self._import_from_project(project, imp)
 
         # The manifest is resolved; perform post-resolution validation.
         self._check_paths_are_unique()
@@ -2144,6 +2190,8 @@ class Manifest:
                         assert p.abspath
 
                     self._projects_by_rpath[Path(p.abspath).resolve()] = p
+
+            self._external_projects = dict(self._ctx.external_projects)
 
             # Update self.group_filter
             #
@@ -2570,6 +2618,81 @@ class Manifest:
 
         return ret
 
+    def _load_external_projects(
+        self, manifest: dict[str, Any]
+    ) -> list[tuple[ExternalProject, Any]]:
+        # Add the external projects to self._ctx.external_projects.
+        # Return their imports.
+
+        have_imports = []
+        names = {pd['name'] for pd in manifest['projects']}
+        for epd in manifest.get('external-projects') or []:
+            project = self._load_external_project(epd)
+            name = project.name
+
+            if name in names:
+                self._malformed(
+                    f'external project name {name} used twice in '
+                    + (self.abspath or 'the same manifest')
+                )
+            names.add(name)
+
+            if name in self._ctx.external_projects or name in self._ctx.projects:
+                continue
+            self._ctx.external_projects[name] = project
+
+            imp = epd.get('import')
+            if imp:
+                if self._ctx.import_flags & (ImportFlag.IGNORE | ImportFlag.IGNORE_PROJECTS):
+                    _logger.debug(f'external project {project}: ignored import ({imp})')
+                else:
+                    have_imports.append((project, imp))
+
+        return have_imports
+
+    def _load_external_project(self, epd: dict) -> ExternalProject:
+        # epd = external project data from the manifest
+
+        name = epd['name']
+        if name == 'manifest':
+            self._malformed('no external project can be named "manifest"')
+
+        # The path is relative to the folder of the manifest file. If
+        # the data come from git, use the project folder instead.
+        raw_path = epd['path']
+        manifest_dir = (
+            self._ctx.current_abspath.parent
+            if self._ctx.current_abspath
+            else self._ctx.current_repo_abspath
+        )
+        if self.topdir and manifest_dir:
+            path = os.path.relpath(os.path.normpath(manifest_dir / raw_path), self.topdir)
+        else:
+            path = os.path.normpath(raw_path)
+        path = Path(path).as_posix()
+
+        # Like for projects: the path must stay in the workspace.
+        if path[0] in '/\\' or os.path.isabs(path) or path.startswith('..'):
+            self._malformed(f'external project "{name}" path "{raw_path}" is not in the workspace')
+        if Path(path).parts[:1] == (util.WEST_DIR,):
+            self._malformed(f'external project "{name}" path "{raw_path}" is in {util.WEST_DIR}')
+
+        raw_groups = epd.get('groups') or []
+        self._validate_project_groups(name, raw_groups)
+        if raw_groups and epd.get('import'):
+            self._malformed(f'external project {name}: "groups" cannot be combined with "import"')
+
+        return ExternalProject(
+            name,
+            url='',
+            description=epd.get('description'),
+            path=path,
+            west_commands=epd.get('west-commands'),
+            topdir=self.topdir,
+            groups=[str(group) for group in raw_groups],
+            userdata=epd.get('userdata'),
+        )
+
     def _validate_project_groups(self, project_name: str, raw_groups: list[RawGroupType]):
         for raw_group in raw_groups:
             if not is_group(raw_group):
@@ -2751,6 +2874,8 @@ class Manifest:
         project.west_commands = _west_commands_merge(project.west_commands, west_commands_to_merge)
 
     def _import_content_from_project(self, project: Project, path: str) -> ImportedContentType:
+        if isinstance(project, ExternalProject):
+            return self._import_content_from_external_project(project, path)
         if not (self._ctx.import_flags & ImportFlag.FORCE_PROJECTS) and project.is_cloned():
             try:
                 return _manifest_content_at(project, path, Manifest.encoding)
@@ -2769,6 +2894,27 @@ class Manifest:
             # We need to clone this project, or we were specifically
             # asked to use the importer.
             return self._ctx.project_importer(project, path)
+
+    def _import_content_from_external_project(
+        self, project: ExternalProject, path: str
+    ) -> ImportedContentType:
+        # West does not manage external projects with git, so read
+        # the file or folder from disk.
+        if project.abspath is None:
+            raise ManifestImportFailed(project, path)
+
+        pathobj = Path(project.abspath) / path
+        if util.escapes_directory(pathobj, project.abspath):
+            self._malformed(f'{project.name_and_path}: import {path} is not in the project')
+        if pathobj.is_dir():
+            return [
+                f.read_text(encoding=Manifest.encoding)
+                for f in sorted(pathobj.iterdir())
+                if _is_yml(f)
+            ]
+        if not pathobj.is_file():
+            self._malformed(f'{project.name_and_path}: import {path}: file not found')
+        return pathobj.read_text(encoding=Manifest.encoding)
 
     def _load_imap(self, imp: dict, src: str) -> _import_map:
         # Convert a parsed self or project import value from YAML into
@@ -2819,7 +2965,10 @@ class Manifest:
         # Add the project to our map if we don't already know about it.
         # Return the result.
 
-        if project.name not in self._ctx.projects:
+        if (
+            project.name not in self._ctx.projects
+            and project.name not in self._ctx.external_projects
+        ):
             self._check_project_name(project)
             self._ctx.projects[project.name] = project
             _logger.debug(
@@ -2860,7 +3009,7 @@ class Manifest:
 
     def _check_paths_are_unique(self) -> None:
         ppaths: dict[Path, Project] = {}
-        for name, project in self._ctx.projects.items():
+        for name, project in {**self._ctx.projects, **self._ctx.external_projects}.items():
             pp = Path(project.path)
             if self._top_level and pp == self._config_path:
                 self._malformed(

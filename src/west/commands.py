@@ -684,7 +684,7 @@ def extension_commands(config: Configuration, manifest: Manifest | None = None):
         manifest = Manifest.from_file()
 
     specs = OrderedDict()
-    for project in manifest.projects:
+    for project in [*manifest.projects, *manifest.external_projects]:
         if project.west_commands:
             specs[project.path] = _ext_specs(project)
     return specs

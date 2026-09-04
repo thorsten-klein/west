@@ -43,6 +43,7 @@ from west.manifest import (
     _VALID_SCHEMA_VERS,
     MANIFEST_PROJECT_INDEX,
     SCHEMA_VERSION,
+    ExternalProject,
     ImportFlag,
     MalformedManifest,
     Manifest,
@@ -738,6 +739,156 @@ def test_no_projects():
       path: foo
     ''')
     assert len(m.projects) == 1  # just ManifestProject
+
+
+#########################################
+# External projects
+
+
+def test_external_projects(manifest_repo):
+    mr = Path(manifest_repo)
+    # An external project has its keys, but is not in projects.
+    (mr / 'sub').mkdir()
+    (mr / 'sub' / 'west.yml').write_text('''\
+    manifest:
+      external-projects:
+      - name: in-sub
+        path: moduleB
+    ''')
+    (mr / 'west.yml').write_text('''\
+    manifest:
+      self:
+        import: sub/west.yml
+      external-projects:
+      - name: ext
+        path: moduleA
+        description: an external project
+        west-commands: west-commands.yml
+        groups: [g]
+        userdata: {key: value}
+      - name: sibling
+        path: ../sibling
+    ''')
+    m = MF()
+
+    assert m.projects[1:] == []
+    ext = m.get_projects(['ext'])[0]
+    assert isinstance(ext, ExternalProject)
+    assert ext.as_dict() == {
+        'name': 'ext',
+        'description': 'an external project',
+        'west-commands': 'west-commands.yml',
+        'groups': ['g'],
+        'userdata': {'key': 'value'},
+        'path': 'mp/moduleA',
+    }
+    # The path is relative to the manifest file that has it.
+    assert {p.name: p.path for p in m.external_projects} == {
+        'in-sub': 'mp/sub/moduleB',
+        'ext': 'mp/moduleA',
+        'sibling': 'sibling',
+    }
+
+
+@pytest.mark.parametrize(
+    'content',
+    [
+        'external-projects: [{name: x}]',
+        'external-projects: [{path: x}]',
+        'external-projects: [{name: manifest, path: x}]',
+        'external-projects: [{name: x, path: a}, {name: x, path: b}]',
+        'external-projects: [{name: x, path: ../x}]',
+        'external-projects: [{name: x, path: .west/x}]',
+        'external-projects: [{name: x, path: x, groups: [-g]}]',
+        'external-projects: [{name: x, path: x, groups: [g], import: true}]',
+        'projects: [{name: x, url: u}]\n  external-projects: [{name: x, path: y}]',
+        'projects: [{name: p, url: u, path: x}]\n  external-projects: [{name: x, path: x}]',
+    ],
+)
+def test_external_project_invalid(content):
+    with pytest.raises(MalformedManifest):
+        M('  ' + content)
+
+
+@pytest.mark.parametrize(
+    'imp, expected',
+    [
+        ('true', ['p1', 'p2']),
+        ('sub.yml', ['p3']),
+        ('subdir', ['p3']),
+        ('[sub.yml, west.yml]', ['p3', 'p1', 'p2']),
+        ('{name-allowlist: [p2]}', ['p2']),
+    ],
+)
+def test_external_project_import(manifest_repo, imp, expected):
+    mr = Path(manifest_repo)
+    # The import is read from the folder; it needs no git.
+    ext = mr / 'ext'
+    (ext / 'subdir').mkdir(parents=True)
+    (mr / 'west.yml').write_text(f'''\
+    manifest:
+      external-projects:
+      - name: ext
+        path: ext
+        west-commands: west-commands.yml
+        import: {imp}
+    ''')
+    (ext / 'west.yml').write_text('''\
+    manifest:
+      self:
+        west-commands: more-commands.yml
+      projects:
+      - {name: p1, url: u1}
+      - {name: p2, url: u2}
+      external-projects:
+      - {name: nested, path: nested}
+    ''')
+    sub = 'manifest:\n  projects:\n  - {name: p3, url: u3}\n'
+    (ext / 'sub.yml').write_text(sub)
+    (ext / 'subdir' / 'sub.yml').write_text(sub)
+    m = MF()
+
+    assert [p.name for p in m.projects[1:]] == expected
+    if 'p1' in expected:
+        ext_project = m.get_projects(['ext'])[0]
+        assert ext_project.west_commands == ['west-commands.yml', 'more-commands.yml']
+        assert m.get_projects(['nested'])[0].path == 'mp/ext/nested'
+
+    # Like for projects, IGNORE_PROJECTS skips the import.
+    assert MF(import_flags=ImportFlag.IGNORE_PROJECTS).projects[1:] == []
+
+
+def test_external_project_name_wins_over_import(manifest_repo):
+    # Projects and external projects share their names. The first
+    # definition wins, also over projects from imports.
+    mr = Path(manifest_repo)
+    (mr / 'ext').mkdir()
+    (mr / 'ext' / 'west.yml').write_text('manifest:\n  projects:\n  - {name: p1, url: u1}\n')
+    (mr / 'west.yml').write_text('''\
+    manifest:
+      external-projects:
+      - {name: ext, path: ext, import: true}
+      - {name: p1, path: vendored-p1}
+    ''')
+    m = MF()
+
+    assert m.projects[1:] == []
+    assert m.get_projects(['p1'])[0].path == 'mp/vendored-p1'
+
+
+def test_external_project_import_errors(manifest_repo):
+    mr = Path(manifest_repo)
+    (mr / 'west.yml').write_text('''\
+    manifest:
+      external-projects:
+      - {name: ext, path: ext, import: missing.yml}
+    ''')
+    with pytest.raises(MalformedManifest):
+        MF()
+
+    # Without topdir, there is no folder to read from.
+    with pytest.raises(ManifestImportFailed):
+        M('  external-projects: [{name: ext, path: ext, import: true}]')
 
 
 #########################################
