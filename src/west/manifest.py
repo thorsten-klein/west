@@ -59,7 +59,7 @@ QUAL_REFS_WEST = 'refs/west/'
 #: v1.0.x, so that users can say "I want schema version 1" instead of
 #: having to keep using '0.13', which was the previous version this
 #: changed.)
-SCHEMA_VERSION = '1.2'
+SCHEMA_VERSION = '1.3'
 # MAINTAINERS:
 #
 # - Make sure to update _VALID_SCHEMA_VERS if you change this.
@@ -216,6 +216,7 @@ _VALID_SCHEMA_VERS = [
     '0.12',
     '0.13',
     '1.0',
+    '1.2',
     SCHEMA_VERSION,
 ]
 
@@ -397,6 +398,11 @@ class _import_ctx(NamedTuple):
     # contains a name which is already present here, we ignore that
     # element.
     projects: dict[str, 'Project']
+
+    # Like 'projects' above, but for the current map from
+    # already-defined external project names to ExternalProject
+    # objects, as found in 'manifest: external-projects:' lists.
+    external_projects: dict[str, 'ExternalProject']
 
     # The project filters we should apply while resolving imports. We
     # try to load this only once from the 'manifest.project-filter'
@@ -642,6 +648,13 @@ def validate(data: Any) -> dict[str, Any]:
     for k in ['projects']:
         if data.get(k) is None:
             data[k] = []
+    # Unlike 'projects', an absent or empty 'external-projects:' is
+    # left alone here; _load_external_projects() treats both the same
+    # way, so there's no need to add a key that wasn't in the original
+    # data and risk surprising anything that compares validate()'s
+    # output against the input.
+    if 'external-projects' in data and data['external-projects'] is None:
+        data['external-projects'] = []
 
     return as_dict
 
@@ -1186,6 +1199,69 @@ class Project:
         return [f.decode(encoding).split('\t', 1)[1] for f in out.split(b'\x00') if f]
 
 
+class ExternalProject(Project):
+    '''Represents an external project defined in a west manifest via
+    the ``external-projects:`` key.
+
+    External projects are pure metadata: unlike `Project`, west does
+    not manage them. In particular, they are never part of
+    `Manifest.projects`, so anything that iterates over that
+    attribute (e.g. "west list", "west update", "west forall") skips
+    them. They can be retrieved by name or path via
+    `Manifest.get_projects`, or listed via
+    `Manifest.external_projects`.
+
+    Note that in the manifest file, an external project's ``path:``
+    is given relative to the directory containing the manifest file
+    that declares it -- unlike a regular `Project`, whose ``path:``
+    is relative to the workspace topdir. Once loaded, however,
+    ``path`` below is normalized to be workspace-topdir-relative too,
+    like `Project.path`, so the two behave the same from here on.
+
+    Attributes:
+
+    - ``name``: external project's unique name
+    - ``path``: relative path to the external project within the
+      workspace (i.e. from ``topdir`` if that is set)
+    - ``abspath``: absolute path to the external project in the
+      native path name format (or ``None`` if ``topdir`` is)
+    - ``posixpath``: like ``abspath``, but with slashes (``/``) as
+      path separators
+    - ``topdir``: the top level directory of the west workspace
+      the external project is part of, or ``None``
+    '''
+
+    def __init__(
+        self,
+        name: str,
+        path: PathType,
+        topdir: PathType | None = None,
+    ):
+        '''ExternalProject constructor.
+
+        Unlike `Project`, *path* is required: external projects have
+        no name-based default for it, in the manifest file or here.
+
+        :param name: external project's ``name:`` attribute in the manifest
+        :param path: path (relative to topdir)
+        :param topdir: the west workspace's top level directory
+        '''
+        super().__init__(name, url='', path=path, topdir=topdir)
+
+    def __repr__(self):
+        return f'ExternalProject("{self.name}", path={self.path!r}, topdir={self.topdir!r})'
+
+    def __str__(self):
+        path_repr = repr(self.abspath or self.path)
+        return f'<ExternalProject {self.name} ({path_repr})>'
+
+    def as_dict(self) -> dict:
+        '''Return a representation of this object as a dict, as it
+        would be parsed from an equivalent YAML manifest.
+        '''
+        return {'name': self.name, 'path': self.path}
+
+
 # FIXME: this whole class should just go away. See #327.
 class ManifestProject(Project):
     '''Represents the manifest repository as a `Project`.
@@ -1568,6 +1644,8 @@ class Manifest:
 
         # This backs the projects() property.
         self._projects: list[Project] = []
+        # This backs the external_projects() property.
+        self._external_projects: list[ExternalProject] = []
         # The final set of groups which are explicitly disabled in
         # this manifest data, after resolving imports. This is used
         # as an optimization in is_active().
@@ -1634,6 +1712,12 @@ class Manifest:
         attribute is returned as a list. Otherwise, the returned list
         has projects in the same order as *project_ids*.
 
+        External projects (from ``external-projects:`` in the
+        manifest) are never returned when *project_ids* is empty, since
+        they're not part of ``self.projects``. They can still be
+        retrieved by explicitly naming them (or their path) in
+        *project_ids*; the result is then an `ExternalProject`.
+
         ``ValueError`` is raised if:
 
             - *project_ids* contains unknown project IDs
@@ -1670,10 +1754,15 @@ class Manifest:
             project: Project | None = None
 
             if isinstance(pid, str):
-                project = self._projects_by_name.get(pid)
+                project = self._projects_by_name.get(pid) or self._external_projects_by_name.get(
+                    pid
+                )
 
             if project is None and allow_paths:
-                project = self._projects_by_rpath.get(Path(pid).resolve())
+                rpath = Path(pid).resolve()
+                project = self._projects_by_rpath.get(
+                    rpath
+                ) or self._external_projects_by_rpath.get(rpath)
 
             if project is None:
                 unknown.append(pid)
@@ -1823,8 +1912,23 @@ class Manifest:
         `ManifestProject` representing the manifest repository. The
         rest of the sequence contains projects in manifest file order
         (or resolution order if the manifest contains imports).
+
+        This does not include external projects; see
+        `external_projects`.
         '''
         return self._projects
+
+    @property
+    def external_projects(self) -> list['ExternalProject']:
+        '''Sequence of `ExternalProject` objects representing the
+        manifest's ``external-projects:``, in manifest file order.
+
+        Unlike `projects`, west ignores this sequence everywhere it
+        iterates over projects (e.g. "west list", "west update",
+        "west forall"). Use it, or `Manifest.get_projects`, to look
+        external projects up.
+        '''
+        return self._external_projects
 
     def is_active(self, project: Project, extra_filter: Iterable[str] | None = None) -> bool:
         '''Is a project active?
@@ -2059,6 +2163,7 @@ class Manifest:
 
         return _import_ctx(
             projects={},
+            external_projects={},
             project_filter=project_filter,
             group_filter_q=deque(),
             manifest_west_commands=[],
@@ -2115,6 +2220,10 @@ class Manifest:
         defaults = self._load_defaults(manifest_data.get('defaults', {}), url_bases)
         self._load_projects(manifest_data, url_bases, defaults)
 
+        # Add this manifest's external projects to the map. These are
+        # never resolved via imports; they're pure metadata.
+        self._load_external_projects(manifest_data)
+
         # The manifest is resolved; perform post-resolution validation.
         self._check_paths_are_unique()
 
@@ -2144,6 +2253,23 @@ class Manifest:
                         assert p.abspath
 
                     self._projects_by_rpath[Path(p.abspath).resolve()] = p
+
+            # Save the resulting external projects and initialize their
+            # lookup tables. External projects are never part of
+            # self.projects: they're ignored by everything that iterates
+            # over it (e.g. "west list", "west update"), and can only be
+            # retrieved via get_projects() or the external_projects
+            # property.
+            self._external_projects = list(self._ctx.external_projects.values())
+            self._external_projects_by_name: dict[str, ExternalProject] = dict(
+                self._ctx.external_projects
+            )
+            self._external_projects_by_rpath: dict[Path, ExternalProject] = {}
+            if self.topdir:
+                for ep in self._external_projects:
+                    if TYPE_CHECKING:
+                        assert ep.abspath
+                    self._external_projects_by_rpath[Path(ep.abspath).resolve()] = ep
 
             # Update self.group_filter
             #
@@ -2532,24 +2658,7 @@ class Manifest:
         # absolute nor starts with a '..'. This is intended to be
         # a purely lexical operation which should therefore ignore
         # symbolic links.
-        ret_norm = os.path.normpath(ret.path)
-
-        # To be "really" absolute, a Windows path must include the "drive" like C:\\, D:\\.
-        # But here we also want to block drive-less "half-breeds".
-        # Note this question has confused Python which changed the `.isabs()` behavior in 3.13
-        if ret_norm[0] in '/\\' or os.path.isabs(ret_norm):
-            self._malformed(
-                f'project "{ret.name}" has absolute path '
-                f'"{ret.path}"; this must be relative to the '
-                f'workspace topdir' + (f' ({self.topdir})' if self.topdir else '')
-            )
-
-        if ret_norm.startswith('..'):
-            self._malformed(
-                f'project "{name}" path "{ret.path}" '
-                f'normalizes to "{ret_norm}", which escapes '
-                f'the workspace topdir'
-            )
+        ret_norm = self._check_path_escape('project', name, ret.path)
 
         _path = Path(ret_norm)
 
@@ -2569,6 +2678,113 @@ class Manifest:
             )
 
         return ret
+
+    def _check_path_escape(self, kind: str, name: str, path: str) -> str:
+        # Make sure 'path' does not escape the workspace. We can't use
+        # escapes_directory() as that resolves paths, which has proven
+        # to break some existing users who use symlinks to existing
+        # repositories outside the workspace as a cache.
+        #
+        # Instead, normalize the path and make sure it's neither
+        # absolute nor starts with a '..'. This is intended to be a
+        # purely lexical operation which should therefore ignore
+        # symbolic links. Returns the normalized path.
+        ret_norm = os.path.normpath(path)
+
+        # To be "really" absolute, a Windows path must include the "drive" like C:\\, D:\\.
+        # But here we also want to block drive-less "half-breeds".
+        # Note this question has confused Python which changed the `.isabs()` behavior in 3.13
+        if ret_norm[0] in '/\\' or os.path.isabs(ret_norm):
+            self._malformed(
+                f'{kind} "{name}" has absolute path '
+                f'"{path}"; this must be relative to the '
+                f'workspace topdir' + (f' ({self.topdir})' if self.topdir else '')
+            )
+
+        if ret_norm.startswith('..'):
+            self._malformed(
+                f'{kind} "{name}" path "{path}" '
+                f'normalizes to "{ret_norm}", which escapes '
+                f'the workspace topdir'
+            )
+
+        return ret_norm
+
+    def _load_external_projects(self, manifest: dict[str, Any]) -> None:
+        # Load external-projects and add them to
+        # self._ctx.external_projects.
+
+        names = set()
+        for epd in manifest.get('external-projects', []):
+            project = self._load_external_project(epd)
+            name = project.name
+
+            if name in names:
+                self._malformed(
+                    f'external project name {name} used twice in '
+                    + (self.abspath or 'the same manifest')
+                )
+            names.add(name)
+
+            if name not in self._ctx.external_projects:
+                self._ctx.external_projects[name] = project
+                _logger.debug(
+                    'added external project %s path %s%s',
+                    project.name,
+                    project.path,
+                    (f' from {self.abspath}' if self.abspath else ''),
+                )
+
+    def _load_external_project(self, epd: dict) -> ExternalProject:
+        # epd = external project data (dictionary with values parsed
+        # from the manifest)
+
+        name = epd['name']
+
+        if name == 'manifest':
+            self._malformed('no external project can be named "manifest"')
+
+        path = self._resolve_external_project_path(name, epd['path'])
+
+        if Path(path).parts[0:1] == (util.WEST_DIR,):
+            self._malformed(
+                f'external project "{name}" path "{path}" is in the {util.WEST_DIR} directory'
+            )
+
+        return ExternalProject(name, path=path, topdir=self.topdir)
+
+    def _resolve_external_project_path(self, name: str, raw_path: str) -> str:
+        # Unlike regular projects, an external project's 'path:' is
+        # relative to the directory containing the manifest file that
+        # declares it -- not the workspace topdir. Resolve it to a
+        # topdir-relative path (normalized, POSIX-style), which is
+        # what ExternalProject.path (like Project.path) is documented
+        # to contain, so the rest of the Project machinery (abspath,
+        # path uniqueness, path-based lookup in get_projects(), ...)
+        # keeps working unmodified.
+
+        # current_abspath is the manifest file's real location on disk
+        # for the top-level manifest and any "self: import:". For a
+        # "projects: ... import:", the data comes from git content
+        # instead, and current_abspath is None; current_repo_abspath
+        # (the project's root) is the best available anchor there --
+        # unlike west-commands paths, we don't adjust for the manifest
+        # file living in a subdirectory of that project.
+        manifest_dir = (
+            self._ctx.current_abspath.parent
+            if self._ctx.current_abspath
+            else self._ctx.current_repo_abspath
+        )
+
+        if self.topdir and manifest_dir:
+            abspath = os.path.normpath(manifest_dir / raw_path)
+            path = Path(os.path.relpath(abspath, self.topdir)).as_posix()
+        else:
+            # No filesystem anchor is available (e.g. Manifest.from_data()
+            # with no topdir): fall back to using the given path as-is.
+            path = os.fspath(raw_path)
+
+        return self._check_path_escape('external project', name, path)
 
     def _validate_project_groups(self, project_name: str, raw_groups: list[RawGroupType]):
         for raw_group in raw_groups:
@@ -2860,7 +3076,7 @@ class Manifest:
 
     def _check_paths_are_unique(self) -> None:
         ppaths: dict[Path, Project] = {}
-        for name, project in self._ctx.projects.items():
+        for name, project in {**self._ctx.projects, **self._ctx.external_projects}.items():
             pp = Path(project.path)
             if self._top_level and pp == self._config_path:
                 self._malformed(
