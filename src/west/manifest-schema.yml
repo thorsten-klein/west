@@ -28,6 +28,11 @@ schema;groups-schema:
   matching: any
 
 type: map
+# Unknown keys directly under "manifest:" are ignored rather than
+# rejected, so that manifests can carry additional top-level data
+# without failing schema validation (e.g. for forward compatibility,
+# or tooling not known to west).
+allowempty: true
 mapping:
   # The "version" key is optional. It's the minimum version manifest
   # schema that is required to correctly parse the manifest data.
@@ -135,6 +140,30 @@ mapping:
           userdata:
             required: false
             type: any
+
+  # The "external-projects" key specifies a sequence of projects that
+  # are not managed by west: they are ignored everywhere west
+  # iterates over "projects:" (e.g. "west update", "west list",
+  # "west forall"). They exist purely as metadata, retrievable via
+  # west.manifest.Manifest.get_projects() or the external_projects
+  # property.
+  external-projects:
+    required: false
+    type: seq
+    sequence:
+      - type: map
+        mapping:
+          # External project's unique name.
+          name:
+            required: true
+            type: str
+          # Path to the external project, relative to the directory
+          # containing this manifest file (unlike a regular project's
+          # "path:", which is relative to the west installation
+          # root).
+          path:
+            required: true
+            type: str
 
   # If present, a list of project groups to enable and disable. Prefix
   # a group name with "-" to disable it; prefix with "+" to enable it.

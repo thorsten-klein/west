@@ -222,6 +222,33 @@ def test_validate():
     ''') == {'manifest': {'projects': [{'name': 'p', 'url': 'u'}]}}
 
 
+def test_validate_allows_unknown_manifest_keys():
+    # Unlike nested mappings (a project's fields, "self:", etc.),
+    # unrecognized keys directly under "manifest:" are accepted and
+    # passed through rather than rejected: this leaves room for
+    # tooling not known to west to stash data there.
+
+    manifest_data = {
+        'manifest': {
+            'projects': [{'name': 'p', 'url': 'u'}],
+            'unknown-key': 123,
+            'another-one': {'nested': True},
+        }
+    }
+    assert validate(manifest_data) == manifest_data
+
+    # This does not extend to nested mappings: a typo'd or misplaced
+    # field there is still an error.
+    with pytest.raises(MalformedManifest):
+        validate('''\
+        manifest:
+          projects:
+          - name: p
+            url: u
+            bogus-field: 1
+        ''')
+
+
 def test_constructor_arg_validation():
     with pytest.raises(ValueError) as e:
         Manifest(source_data='x', topdir='y')
@@ -466,6 +493,166 @@ def test_project_paths_unique():
         - name: b
           path: p
         ''')
+
+
+def test_external_projects():
+    # External projects are metadata-only: they show up via
+    # get_projects() and the external_projects property, but never in
+    # .projects, so anything that iterates over .projects ignores them.
+
+    m = M('''\
+    projects:
+    - name: real
+      url: https://foo.com
+    external-projects:
+    - name: xxx
+      path: moduleA
+    ''')
+
+    assert [p.name for p in m.projects] == ['manifest', 'real']
+    assert [(p.name, p.path) for p in m.external_projects] == [('xxx', 'moduleA')]
+
+    # get_projects() with no IDs is unaffected: it returns exactly
+    # what .projects does, for backwards compatibility with every
+    # place west iterates over "all projects".
+    assert m.get_projects([]) == m.projects
+
+    # But external projects can be explicitly retrieved by name.
+    xxx = m.get_projects(['xxx'])
+    assert len(xxx) == 1
+    assert xxx[0].name == 'xxx'
+    assert xxx[0].path == 'moduleA'
+
+    with pytest.raises(ValueError):
+        m.get_projects(['not-a-project'])
+
+
+def test_external_project_must_have_path():
+    with pytest.raises(MalformedManifest):
+        M('''\
+        external-projects:
+        - name: xxx
+        ''')
+
+
+def test_external_project_must_have_name():
+    with pytest.raises(MalformedManifest):
+        M('''\
+        external-projects:
+        - path: moduleA
+        ''')
+
+
+def test_no_external_project_named_manifest():
+    with pytest.raises(MalformedManifest):
+        M('''\
+        external-projects:
+        - name: manifest
+          path: moduleA
+        ''')
+
+
+def test_external_project_names_unique():
+    with pytest.raises(MalformedManifest):
+        M('''\
+        external-projects:
+        - name: xxx
+          path: a
+        - name: xxx
+          path: b
+        ''')
+
+
+def test_external_project_paths_unique_with_projects():
+    # An external project may not reuse a path already taken by a
+    # regular project, or vice versa.
+
+    with pytest.raises(MalformedManifest):
+        M('''\
+        projects:
+        - name: real
+          url: https://foo.com
+          path: p
+        external-projects:
+        - name: xxx
+          path: p
+        ''')
+
+
+def test_external_project_path_escape():
+    with pytest.raises(MalformedManifest):
+        M('''\
+        external-projects:
+        - name: xxx
+          path: ../escapes
+        ''')
+
+
+def test_external_project_path_relative_to_manifest_dir(manifest_repo):
+    # An external project's path is relative to the directory
+    # containing the manifest file that declares it -- not the
+    # workspace topdir, unlike a regular project's path.
+
+    with open(manifest_repo / 'west.yml', 'w') as f:
+        f.write('''\
+        manifest:
+          external-projects:
+          - name: xxx
+            path: moduleA
+          self:
+            path: mp
+        ''')
+
+    ext = MF().external_projects[0]
+    assert ext.path == 'mp/moduleA'
+    assert Path(ext.abspath) == Path(manifest_repo) / 'moduleA'
+
+
+def test_external_project_path_can_escape_manifest_dir(manifest_repo):
+    # As long as the resolved location stays inside the workspace
+    # topdir, an external project's path may use '..' to go up from
+    # its declaring manifest's own directory.
+
+    with open(manifest_repo / 'west.yml', 'w') as f:
+        f.write('''\
+        manifest:
+          external-projects:
+          - name: xxx
+            path: ../sibling
+          self:
+            path: mp
+        ''')
+
+    ext = MF().external_projects[0]
+    assert ext.path == 'sibling'
+    assert Path(ext.abspath) == Path(manifest_repo.topdir) / 'sibling'
+
+
+def test_external_project_path_relative_to_self_import_subdir(manifest_repo):
+    # If external-projects: is declared in a submanifest brought in
+    # via "self: import:", its paths are relative to that
+    # submanifest's own directory, not the top-level manifest's.
+
+    os.makedirs(manifest_repo / 'sub', exist_ok=True)
+    with open(manifest_repo / 'sub' / 'west.yml', 'w') as f:
+        f.write('''\
+        manifest:
+          external-projects:
+          - name: xxx
+            path: moduleB
+        ''')
+
+    with open(manifest_repo / 'west.yml', 'w') as f:
+        f.write('''\
+        manifest:
+          self:
+            path: mp
+            import: sub/west.yml
+        ''')
+
+    ext = MF().external_projects[0]
+    assert ext.path == 'mp/sub/moduleB'
+    assert Path(ext.abspath) == Path(manifest_repo) / 'sub' / 'moduleB'
 
 
 def test_project_paths_with_repo_path():
