@@ -222,6 +222,33 @@ def test_validate():
     ''') == {'manifest': {'projects': [{'name': 'p', 'url': 'u'}]}}
 
 
+def test_validate_allows_unknown_manifest_keys():
+    # Unlike nested mappings (a project's fields, "self:", etc.),
+    # unrecognized keys directly under "manifest:" are accepted and
+    # passed through rather than rejected: this leaves room for
+    # tooling not known to west to stash data there.
+
+    manifest_data = {
+        'manifest': {
+            'projects': [{'name': 'p', 'url': 'u'}],
+            'unknown-key': 123,
+            'another-one': {'nested': True},
+        }
+    }
+    assert validate(manifest_data) == manifest_data
+
+    # This does not extend to nested mappings: a typo'd or misplaced
+    # field there is still an error.
+    with pytest.raises(MalformedManifest):
+        validate('''\
+        manifest:
+          projects:
+          - name: p
+            url: u
+            bogus-field: 1
+        ''')
+
+
 def test_constructor_arg_validation():
     with pytest.raises(ValueError) as e:
         Manifest(source_data='x', topdir='y')

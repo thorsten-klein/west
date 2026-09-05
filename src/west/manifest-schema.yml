@@ -28,6 +28,11 @@ schema;groups-schema:
   matching: any
 
 type: map
+# Unknown keys directly under "manifest:" are ignored rather than
+# rejected, so that manifests can carry additional top-level data
+# without failing schema validation (e.g. for forward compatibility,
+# or tooling not known to west).
+allowempty: true
 mapping:
   # The "version" key is optional. It's the minimum version manifest
   # schema that is required to correctly parse the manifest data.
