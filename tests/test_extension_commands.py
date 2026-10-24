@@ -563,3 +563,28 @@ def test_extension_special_chars(west_update_tmpdir):
     resolved_mf = cmd('manifest --resolve')
     resolved_mf = yaml.safe_load(resolved_mf)
     assert resolved_mf["manifest"]["self"]["west-commands"] == weird_cmds
+
+
+def test_extension_command_external_project(west_update_tmpdir):
+    # Commands of an external project are read from its folder.
+    zephyr = Path(west_update_tmpdir) / 'zephyr'
+    (zephyr / 'ext').mkdir()
+    (zephyr / 'ext' / 'ext.py').write_text(
+        textwrap.dedent('''\
+            from west.commands import WestCommand
+            class ExtCommand(WestCommand):
+                def __init__(self):
+                    super().__init__('ext-cmd', 'help', 'description')
+                def do_add_parser(self, parser_adder):
+                    return parser_adder.add_parser(self.name)
+                def do_run(self, args, unknown):
+                    print('external project command works')
+            ''')
+    )
+    (zephyr / 'ext' / 'west-commands.yml').write_text(
+        'west-commands:\n- file: ext.py\n  commands:\n  - name: ext-cmd\n    class: ExtCommand\n'
+    )
+    with open(zephyr / 'west.yml', 'a') as f:
+        f.write('  external-projects: [{name: ext, path: ext, west-commands: west-commands.yml}]\n')
+
+    assert 'external project command works' in cmd('ext-cmd')

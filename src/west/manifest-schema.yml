@@ -136,6 +136,36 @@ mapping:
             required: false
             type: any
 
+  # Projects that west does not clone or update. "path:" is relative
+  # to the directory of this manifest file.
+  external-projects:
+    required: false
+    type: seq
+    sequence:
+      - type: map
+        mapping:
+          name:
+            required: true
+            type: str
+          path:
+            required: true
+            type: str
+          description:
+            required: false
+            type: str
+          west-commands:
+            required: false
+            type: str
+          import:
+            required: false
+            type: any
+          groups:
+            required: false
+            include: groups-schema
+          userdata:
+            required: false
+            type: any
+
   # If present, a list of project groups to enable and disable. Prefix
   # a group name with "-" to disable it; prefix with "+" to enable it.
   group-filter:

@@ -148,6 +148,16 @@ def test_list(west_update_tmpdir):
         cmd('list NOT_A_PROJECT')
 
 
+def test_list_external_projects(west_update_tmpdir):
+    # External projects are listed after the projects.
+    with open(Path(west_update_tmpdir) / 'zephyr' / 'west.yml', 'a') as f:
+        f.write('  external-projects: [{name: ext, path: ext}]\n')
+
+    actual = cmd(_list_f('{name} {revision} {path} {cloned} {sha}'))
+    assert actual.splitlines()[-1].split() == ['ext', 'external', 'zephyr/ext', 'external', 'N/A']
+    assert cmd(_list_f('{name} {url}') + ['ext']).strip() == 'ext N/A'
+
+
 def test_list_manifest(west_update_tmpdir):
     # The manifest's "self: path:" should only be used to print
     # path-type format strings with --manifest-path-from-yaml.
